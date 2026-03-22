@@ -1,0 +1,20 @@
+{
+  "name": "ענן המחשבות",
+  "short_name": "ענן מחשבות",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0A3B66",
+  "theme_color": "#0A3B66",
+  "icons": [
+    {
+      "src": "logo.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
