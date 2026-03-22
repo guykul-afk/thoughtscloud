@@ -12,15 +12,29 @@ const FILE_NAME = 'diary_state.json';
 let tokenClient: any;
 let gapiInited = false;
 let gisInited = false;
+let isManualAuthFlow = false;
+let gapiInitializedResolve: (value: unknown) => void;
+export const gapiInitializedPromise = new Promise((resolve) => {
+    gapiInitializedResolve = resolve;
+});
 let onAuthChangeCallback: ((isAuthenticated: boolean) => void) | null = null;
 
 const STORAGE_KEY = 'gdrive_auth_token';
 
 function saveToken(token: any) {
-    if (token) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(token));
-    } else {
-        localStorage.removeItem(STORAGE_KEY);
+    try {
+        if (token) {
+            console.log("TRACE: saveToken - Writing to localStorage...");
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(token));
+            // Immediate verification
+            const verify = localStorage.getItem(STORAGE_KEY);
+            console.log("TRACE: saveToken - Disk Commit Verification:", verify ? "SUCCESS" : "FAIL");
+        } else {
+            console.log("TRACE: saveToken - Clearing localStorage...");
+            localStorage.removeItem(STORAGE_KEY);
+        }
+    } catch (e) {
+        console.error("TRACE: saveToken - Exception during disk write:", e);
     }
 }
 
@@ -38,52 +52,91 @@ function loadSavedToken() {
 
 // Initialize gapi client
 export async function initGapiClient() {
-    await gapi.client.init({
-        discoveryDocs: [DISCOVERY_DOC],
-    });
+    console.log("TRACE: initGapiClient - Starting init...");
+    try {
+        const initPromise = gapi.client.init({
+            discoveryDocs: [DISCOVERY_DOC],
+        });
+
+        // Add a 10-second safety timeout for GAPI init (can hang on certain mobile networks)
+        const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("GAPI Init Timeout")), 10000)
+        );
+
+        await Promise.race([initPromise, timeoutPromise]);
+        console.log("TRACE: initGapiClient - gapi.client.init SUCCESS");
+    } catch (err: any) {
+        console.error("TRACE: initGapiClient - gapi.client.init FAIL:", err);
+        // Continue anyway as we might still have a token from localStorage
+    }
+
     gapiInited = true;
+    gapiInitializedResolve(true);
 
     // Try to restore token
     const savedToken = loadSavedToken();
+    console.log("TRACE: initGapiClient - Checking localStorage for token...");
     if (savedToken) {
+        console.log("TRACE: initGapiClient - Found saved token. Applying...");
         gapi.client.setToken(savedToken);
+    } else {
+        console.log("TRACE: initGapiClient - No token in storage.");
     }
 
     checkAuthStatus();
+    console.log("TRACE: initGapiClient complete.");
 }
 
 // Load gapi script
-export function loadGapi() {
-    if (gapiInited) return;
+export function loadGapi(): Promise<boolean> {
+    console.log("TRACE: loadGapi triggered");
+    if (gapiInited) return Promise.resolve(true);
     if (typeof gapi === 'undefined') {
-        setTimeout(loadGapi, 100);
-        return;
+        return new Promise((resolve) => {
+            setTimeout(() => resolve(loadGapi()), 100);
+        });
     }
-    gapi.load('client', initGapiClient);
+    return new Promise((resolve) => {
+        gapi.load('client', () => {
+            console.log("TRACE: gapi.load('client') callback reached.");
+            initGapiClient().then(() => resolve(true)).catch(err => {
+                console.error("TRACE: initGapiClient Uncaught Error:", err);
+                resolve(false);
+            });
+        });
+    });
 }
 
 // Initialize GIS client
-export function loadGis() {
-    if (gisInited) return;
+export function loadGis(): Promise<boolean> {
+    console.log("TRACE: loadGis triggered");
+    if (gisInited) return Promise.resolve(true);
     if (typeof google === 'undefined') {
-        setTimeout(loadGis, 100);
-        return;
+        return new Promise((resolve) => {
+            setTimeout(() => resolve(loadGis()), 100);
+        });
     }
+    
     tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: CLIENT_ID,
         scope: SCOPES,
         callback: (tokenResponse: any) => {
+            console.log("TRACE: GIS Callback triggered. isManual:", isManualAuthFlow);
             if (tokenResponse.error !== undefined) {
                 console.error("Auth Exception:", tokenResponse.error);
+                isManualAuthFlow = false;
                 alert("שגיאה בהתחברות לגוגל. אנא נסה שנית.");
                 return;
             }
             saveToken(tokenResponse);
-            // Rebuild Procedure: Nuclear reload to guarantee clean OS hardware state (Mic)
-            window.location.reload();
+            
+            console.log("TRACE: GIS Auth Successful. Updating state. NO RELOAD.");
+            isManualAuthFlow = false;
+            checkAuthStatus();
         },
     });
     gisInited = true;
+    return Promise.resolve(true);
 }
 
 export function setAuthChangeCallback(callback: (isAuthenticated: boolean) => void) {
@@ -91,36 +144,49 @@ export function setAuthChangeCallback(callback: (isAuthenticated: boolean) => vo
 }
 
 function checkAuthStatus() {
+    if (!gapiInited || !gapi.client) {
+        console.warn("TRACE: checkAuthStatus called but GAPI not ready.");
+        return;
+    }
     const token = gapi.client.getToken();
-    const isAuthenticated = token !== null;
+    const isNowAuthenticated = token !== null;
+    console.log("TRACE: checkAuthStatus -> Result:", isNowAuthenticated ? "SYNCED" : "NOT SET");
 
-    // Save token for persistence
-    if (isAuthenticated) {
+    // Save token if currently valid
+    if (isNowAuthenticated) {
         saveToken(token);
     }
 
     if (onAuthChangeCallback) {
-        onAuthChangeCallback(isAuthenticated);
+        onAuthChangeCallback(isNowAuthenticated);
     }
 }
 
 export function handleAuthClick() {
+    console.log("TRACE: handleAuthClick triggered");
     if (!tokenClient) {
+        console.error("TRACE: tokenClient is NULL - Auth NOT READY");
         alert("מערכת האימות של גוגל עדיין נטענת... אנא נסה שוב בעוד כמה שניות.");
         return;
     }
     
+    console.log("TRACE: tokenClient is ready, requesting token...");
     // Use select_account as it's more robust for PWA/Mobile context shifts
     // and correctly triggers a fresh interaction if required.
     try {
+        isManualAuthFlow = true; // MARK as manual
         const token = gapi.client.getToken();
+        console.log("TRACE: Current token state:", token ? "EXISTS" : "NONE");
         if (!token) {
+            console.log("TRACE: No token, calling requestAccessToken({prompt: 'select_account'})");
             tokenClient.requestAccessToken({ prompt: 'select_account' });
         } else {
+            console.log("TRACE: Token exists, calling requestAccessToken({prompt: ''})");
             tokenClient.requestAccessToken({ prompt: '' });
         }
     } catch (e) {
-        console.error("Auth request error:", e);
+        console.error("TRACE: Auth request Exception:", e);
+        isManualAuthFlow = true;
         tokenClient.requestAccessToken({ prompt: 'select_account' });
     }
 }
@@ -316,4 +382,23 @@ export async function downloadStateFromDrive(): Promise<any | null> {
         console.error("Error downloading from drive", err);
         return null;
     }
+}
+
+export function forceCheckAuth() {
+    console.log("TRACE: forceCheckAuth manually triggered.");
+    const savedToken = loadSavedToken();
+    if (savedToken) {
+        console.log("TRACE: forceCheckAuth - Token found in storage. Applying...");
+        gapi.client.setToken(savedToken);
+        checkAuthStatus();
+    } else {
+        console.warn("TRACE: forceCheckAuth - No token found to apply.");
+        checkAuthStatus();
+    }
+}
+
+export function dumpStorage() {
+    const token = localStorage.getItem(STORAGE_KEY);
+    console.log("TRACE: localStorage DUMP -> " + STORAGE_KEY + " =", token ? token.substring(0, 20) + "..." : "EMPTY");
+    return token;
 }

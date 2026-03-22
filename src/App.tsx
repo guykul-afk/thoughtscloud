@@ -17,7 +17,6 @@ import {
   X,
   Star,
   Cloud,
-  LayoutGrid,
   Activity
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
@@ -39,8 +38,7 @@ import {
 } from './services/ai';
 import { GeminiLiveService, type LiveChatStatus } from './services/live-ai';
 import { synthesizeSpeech } from './services/tts';
-import { loadGapi, loadGis, handleAuthClick, handleSignoutClick, setAuthChangeCallback, uploadStateToDrive, downloadStateFromDrive } from './services/drive';
-import Constellation from './components/Constellation';
+import { loadGapi, loadGis, handleAuthClick, handleSignoutClick, setAuthChangeCallback, uploadStateToDrive, downloadStateFromDrive, forceCheckAuth, dumpStorage } from './services/drive';
 import VoicePulse from './components/VoicePulse';
 import KorczakInsight from './components/KorczakInsight';
 import DashboardTab from './components/DashboardTab';
@@ -100,6 +98,7 @@ export default function App() {
   }, []);
 
   // Gemini Live State
+  const [isRecording, setIsRecording] = useState(false);
   const [isLiveActive, setIsLiveActive] = useState(false);
   const [liveStatus, setLiveStatus] = useState<LiveChatStatus>('disconnected');
   const [liveTranscript, setLiveTranscript] = useState('');
@@ -111,10 +110,28 @@ export default function App() {
 
   // Initialize Google Drive API and Viewport Height
   useEffect(() => {
-    loadGapi();
-    loadGis();
+    const initBoot = async () => {
+      console.log("TRACE: App.tsx -> Booting GAPI/GIS Sequence...");
+      try {
+        // Race condition protection for script loading
+        const timeout = setTimeout(() => {
+          console.warn("TRACE: GAPI/GIS Boot Timeout - Proceeding anyway");
+          loadGapi(); // Try one last time
+          loadGis();
+        }, 5000);
+
+        await Promise.all([loadGapi(), loadGis()]);
+        clearTimeout(timeout);
+        console.log("TRACE: App.tsx -> GAPI/GIS Init CALLED");
+      } catch (e) {
+        console.error("TRACE: Boot Error:", e);
+      }
+    };
+    
+    initBoot();
+    
     setAuthChangeCallback((authStatus) => {
-      console.log("Drive Auth Callback Status:", authStatus);
+      console.log("TRACE: App.tsx -> Auth Callback Received:", authStatus);
       setIsAuthenticated(authStatus);
       if (authStatus) {
         syncFromDrive();
@@ -126,7 +143,7 @@ export default function App() {
       if (typeof gapi !== 'undefined' && gapi.client) {
          const token = gapi.client.getToken();
          if (token && !isAuthenticated) {
-            console.log("Token detected via fallback check.");
+            console.log("TRACE: App.tsx -> Token recovered via interval fallback.");
             setIsAuthenticated(true);
             syncFromDrive();
          }
@@ -136,12 +153,16 @@ export default function App() {
     return () => {
       clearInterval(interval);
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, entries.length]); // Re-run if entries change to detect if auth is needed
 
-  // Persistent Re-connection logic - Disabled automatic background reconnect to prevent popup blocking
   const { setGdriveConnected } = useAppStore();
 
+  useEffect(() => {
+    console.log("TRACE: App.tsx -> isAuthenticated CHANGED:", isAuthenticated);
+  }, [isAuthenticated]);
+
   const handleAuth = () => {
+    console.log("TRACE: App.tsx -> handleAuth triggered");
     setGdriveConnected(true);
     handleAuthClick();
   };
@@ -193,7 +214,7 @@ export default function App() {
 
   // Sync to drive whenever entries or chatMessages change (with simple debounce)
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || isRecording) return; // DON'T SYNC WHILE RECORDING
     const chatLen = useAppStore.getState().chatMessages.length;
     if (entries.length === 0 && chatLen === 0) return;
 
@@ -545,14 +566,7 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
   return (
     <div className="w-full h-full flex flex-col overflow-hidden bg-transparent">
       <div className="relative w-full h-full flex flex-col text-white overflow-hidden bg-transparent">
-        {/* 3D Background */}
-        <div className="absolute inset-0 z-0 pointer-events-none opacity-60">
-          <div className="w-full h-full pointer-events-auto">
-            <Constellation onSelectEntry={() => {
-              setActiveTab('history');
-            }} />
-          </div>
-        </div>
+        {/* 3D Background has been removed for mobile stability */}
 
         {/* Background aesthetic line */}
         <div className="absolute top-[30%] left-[-20%] right-[-20%] h-[60%] bg-[#5EB5D6] opacity-40 blur-[100px] rounded-[50%] pointer-events-none" />
@@ -644,38 +658,75 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
               ))}
            </div>
 
-           <div className="grid grid-cols-2 gap-3 mt-4">
+           <div className="grid grid-cols-2 gap-3 mt-4 pb-[180px]">
               <button 
                 onClick={() => {
-                  console.log("Manual Reset Triggered...");
+                  console.log("Nuclear Reset (Clear Cache) Triggered...");
+                  localStorage.clear();
                   window.location.reload();
                 }}
-                className="w-full bg-white/10 py-3 rounded-xl border border-white/20 text-white font-bold"
-              >אתחול מלא</button>
+                className="w-full bg-red-600/20 py-3 rounded-xl border border-red-500/30 text-red-100 font-bold"
+              >איפוס מטמון</button>
               <button 
                 onClick={() => {
+                  console.log("Manual Sync (Force Scan) Triggered...");
+                  forceCheckAuth();
+                  dumpStorage();
+                }}
+                className="w-full bg-blue-600/20 py-3 rounded-xl border border-blue-500/30 text-blue-400 font-bold"
+              >סנכרון ידני</button>
+              <button 
+                onClick={() => {
+                  console.log("Fix Device (Reload) Triggered...");
+                  window.location.reload();
+                }}
+                className="w-full bg-amber-600/20 py-3 rounded-xl border border-amber-500/30 text-amber-400 font-bold"
+              >תיקון חומרה (Reload)</button>
+              <button 
+                onClick={async () => {
+                  console.log("MIC DOCTOR: Starting hardware check...");
                   try {
+                    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+                    await ctx.resume();
+                    console.log("MIC DOCTOR: AudioContext Status ->", ctx.state);
+                    
+                    const timeout = setTimeout(() => {
+                      console.error("MIC DOCTOR: getUserMedia HANG/TIMEOUT (5s)");
+                      ctx.close();
+                    }, 5000);
+
                     navigator.mediaDevices.getUserMedia({ audio: true })
                       .then((s) => {
-                        console.log("PERMISSION: Mic Access OK");
+                        clearTimeout(timeout);
+                        console.log("MIC DOCTOR: getUserMedia SUCCESS. Tracks:", s.getTracks().length);
+                        console.log("MIC DOCTOR: Sample Rate ->", ctx.sampleRate);
                         s.getTracks().forEach(t => t.stop());
+                        ctx.close();
                       })
-                      .catch(err => console.error("PERMISSION: Mic Fail:", err.name, err.message));
-                  } catch (e) { console.error("PERMISSION: Mic Exception:", e); }
+                      .catch(err => {
+                        clearTimeout(timeout);
+                        console.error("MIC DOCTOR: getUserMedia FAIL ->", err.name, err.message);
+                        ctx.close();
+                      });
+                  } catch (e) { 
+                    console.error("MIC DOCTOR: Exception ->", e); 
+                  }
                 }}
                 className="w-full bg-emerald-600/20 py-3 rounded-xl border border-emerald-500/30 text-emerald-400 font-bold"
-              >בדיקת מיקרופון</button>
+              >בדיקת מיקרופון (Doctor)</button>
            </div>
         </div>
       )}
 
       {/* Main Content Area */}
-      <main className="relative z-10 w-full flex-1 flex flex-col items-center px-6 overflow-y-auto pb-[120px] pt-4 custom-scrollbar">
+      <main className="relative z-10 w-full flex-1 flex flex-col items-center px-6 overflow-y-auto pb-[200px] pt-4 custom-scrollbar">
         {activeTab === 'home' && (
           <HomeTab 
             isLiveActive={isLiveActive} 
             liveStatus={liveStatus} 
             liveTranscript={liveTranscript}
+            isRecording={isRecording}
+            setIsRecording={setIsRecording}
           />
         )}
         {activeTab === 'actions' && <ActionsTab />}
@@ -795,13 +846,14 @@ function NavItem({ label, isActive, onClick }: { id: string; label: string; isAc
 }
 
 function HomeTab({ 
-  isLiveActive, liveStatus, liveTranscript
+  isLiveActive, liveStatus, liveTranscript, isRecording, setIsRecording
 }: { 
   isLiveActive: boolean; 
   liveStatus: LiveChatStatus; 
   liveTranscript: string;
+  isRecording: boolean;
+  setIsRecording: (val: boolean) => void;
 }) {
-  const [isRecording, setIsRecording] = useState(false);
   const [showTextInput, setShowTextInput] = useState(false);
   const [textInput, setTextInput] = useState('');
   const [isProcessingText, setIsProcessingText] = useState(false);
@@ -813,7 +865,14 @@ function HomeTab({
   const timerIntervalRef = useRef<number | null>(null);
 
   const startRecording = async () => {
+    console.log("TRACE: startRecording (STAGE 1: Intent Received)");
     try {
+      if (isRecording) {
+        console.warn("TRACE: startRecording aborted - already recording.");
+        return;
+      }
+      setIsRecording(true); // Set UI state first for responsiveness
+      console.log("TRACE: startRecording (STAGE 2: UI State Set)");
       const getUserMediaWithTimeout = (constraints: MediaStreamConstraints, timeoutMs = 4000): Promise<MediaStream> => {
         return new Promise((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error("Timeout: Mic request hanging")), timeoutMs);
@@ -823,7 +882,9 @@ function HomeTab({
         });
       };
 
+      console.log("TRACE: startRecording -> requesting getUserMedia...");
       const stream = await getUserMediaWithTimeout({ audio: true });
+      console.log("TRACE: startRecording -> getUserMedia OK (Stream Active)");
       const mimeType = MediaRecorder.isTypeSupported('audio/webm') 
         ? 'audio/webm' 
         : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
@@ -883,7 +944,9 @@ function HomeTab({
       setIsRecording(true);
       
       try {
-        recorder.start(); // Remove timeslice for maximum stability
+        console.log("TRACE: startRecording (STAGE 4: Hardware Start Request)");
+        recorder.start(1000); // Using 1000ms timeslice as it's often more stable on Safari
+        console.log("TRACE: startRecording (STAGE 5: Hardware OK - Timer Starting)");
         if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
         timerIntervalRef.current = window.setInterval(() => {
           setRecordingTime(prev => prev + 1);
@@ -947,7 +1010,7 @@ function HomeTab({
   };
 
   return (
-    <div className="flex flex-col items-center justify-start text-center w-full h-full pt-6 space-y-8">
+    <div className="flex flex-col items-center justify-start text-center w-full h-full pt-10 pb-[100px] space-y-12">
       <div className="relative w-64 h-64 flex items-center justify-center">
         {/* Glow effect */}
         <div className={cn(

@@ -221,38 +221,35 @@ export default function DashboardTab() {
           <div className="px-6 pb-8 pt-2 animate-in fade-in slide-in-from-top-2">
             <div className="mb-6 flex items-center justify-center gap-6 text-[10px] uppercase tracking-widest border-b border-white/5 pb-4">
                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-emerald-400"></div>
-                  <span className="text-emerald-400/80">ניתן דגש או תועד</span>
+                  <div className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_5px_rgba(52,211,153,0.5)]"></div>
+                  <span className="text-white/70 font-bold">ניתן דגש או תועד</span>
                </div>
                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-rose-500"></div>
-                  <span className="text-rose-500/80">דרוש התייחסות</span>
+                  <div className="w-2 h-2 rounded-full bg-rose-400 shadow-[0_0_5px_rgba(244,63,94,0.5)]"></div>
+                  <span className="text-white/70 font-bold">דרוש התייחסות</span>
                </div>
             </div>
 
             <div className="grid grid-cols-1 gap-y-5">
               {korczakData.map((item) => (
-                <div key={item.id} className="space-y-2 group">
+                <div key={item.id} className="space-y-2 group bg-white/5 p-3 rounded-2xl border border-white/5 transition-all hover:bg-white/10">
                   <div className="flex justify-between items-end px-1">
                     <div className="flex items-center gap-2">
-                      <span className={cn(
-                        "text-[12px] font-bold transition-colors",
-                        item.isEmphasized ? "text-emerald-400" : "text-rose-500"
-                      )}>
+                      <span className="text-[13px] font-bold text-white/95">
                         {item.label}
                       </span>
                     </div>
                     {item.isEmphasized ? (
-                      <span className="text-[9px] font-mono text-emerald-400/50">+{item.focusScore} אזכורים</span>
+                      <span className="text-[10px] font-bold text-white/50">+{item.focusScore} אזכורים</span>
                     ) : (
-                      <span className="text-[9px] font-mono text-rose-500/50">אין תיעוד</span>
+                      <span className="text-[10px] font-bold text-white/30 italic">דרוש התייחסות</span>
                     )}
                   </div>
-                  <div className="h-2 w-full bg-white/5 rounded-full overflow-hidden">
+                  <div className="h-3 w-full bg-black/20 rounded-full overflow-hidden border border-white/5">
                     <div 
                       className={cn(
                         "h-full rounded-full transition-all duration-1000 ease-out",
-                        item.isEmphasized ? "bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.3)]" : "bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.3)]"
+                        item.isEmphasized ? "bg-emerald-400 shadow-[0_0_15px_rgba(52,211,153,0.5)]" : "bg-rose-500 shadow-[0_0_15px_rgba(244,63,94,0.5)]"
                       )}
                       style={{ width: item.isEmphasized ? `${item.barPercentage}%` : '5%' }}
                     />
