@@ -9,15 +9,14 @@ import {
   ChevronUp,
   Brain,
   Notebook,
-  Volume2,
-  VolumeX,
   Loader2,
   Trash2,
   Square,
   X,
   Star,
   Cloud,
-  Activity
+  Activity,
+  Check
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -27,20 +26,19 @@ import {
   generateWeeklyBriefing,
   generateCategoricalInsights,
   generateLifeThemesAnalysis,
-  generateShadowWorkInsight,
+  analyzeExecutionGap,
   generateEmotionalGTDInsight,
   generateOperatingManual,
   generateKorczakAnalysis,
+  generateMajorInsights,
   processAudioSession,
   processTextSession,
   SUPPORTED_MODELS,
   setActiveModel
 } from './services/ai';
 import { GeminiLiveService, type LiveChatStatus } from './services/live-ai';
-import { synthesizeSpeech } from './services/tts';
 import { loadGapi, loadGis, handleAuthClick, handleSignoutClick, setAuthChangeCallback, uploadStateToDrive, downloadStateFromDrive, forceCheckAuth, dumpStorage } from './services/drive';
 import VoicePulse from './components/VoicePulse';
-import KorczakInsight from './components/KorczakInsight';
 import DashboardTab from './components/DashboardTab';
 import SpeechButton from './components/SpeechButton';
 
@@ -54,7 +52,7 @@ export function cn(...inputs: ClassValue[]) {
 export default function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'actions' | 'insights' | 'dashboard' | 'history'>('home');
   const { apiKey, setApiKey, entries, setEntries } = useAppStore();
-  const [showKeyModal, setShowKeyModal] = useState(!apiKey);
+  const [showKeyModal, setShowKeyModal] = useState(false);
   const [isTestingKey, setIsTestingKey] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -275,6 +273,7 @@ export default function App() {
     return () => clearTimeout(timeoutId);
   }, [entries.length, apiKey]);
 
+
   // Generate Categorical Insights when entries change
   const { setCategoricalInsights } = useAppStore();
   useEffect(() => {
@@ -298,7 +297,8 @@ export default function App() {
     shadowWork, setShadowWork,
     dailyGtd, setDailyGtd,
     operatingManual, setOperatingManual,
-    korczakAnalysis, setKorczakAnalysis
+    korczakAnalysis, setKorczakAnalysis,
+    majorInsights, setMajorInsights
   } = useAppStore();
 
   useEffect(() => {
@@ -320,12 +320,8 @@ export default function App() {
         }
       }
 
-      // 2. Personal Operating Manual (Update every 3 days or if it doesn't exist)
-      // Check if it's been more than 3 days
-      const lastManualDate = operatingManual?.lastDate ? new Date(operatingManual.lastDate) : new Date(0);
-      const diffDays = Math.floor((now.getTime() - lastManualDate.getTime()) / (1000 * 3600 * 24));
-
-      if (!operatingManual || diffDays >= 3) {
+      // 2. Personal Operating Manual (Update on Thursdays)
+      if (dayOfWeek === 4 && operatingManual?.lastDate !== todayStr) {
         try {
           const manual = await generateOperatingManual(entries, apiKey);
           setOperatingManual({ insight: manual, lastDate: todayStr });
@@ -334,13 +330,14 @@ export default function App() {
         }
       }
 
-      // 2. Weekly Life Themes & Shadow Work (Friday)
-      if (dayOfWeek === 5 && (lifeThemes?.lastWeeklyDate !== todayStr || shadowWork?.lastDate !== todayStr)) {
+      // 2. Weekly Life Themes (Friday) & Execution Gap Analysis
+      if (dayOfWeek === 1 && (lifeThemes?.lastWeeklyDate !== todayStr || shadowWork?.lastDate !== todayStr)) {
         try {
           const themes = await generateLifeThemesAnalysis(entries, apiKey, 'weekly');
-          const shadow = await generateShadowWorkInsight(entries, apiKey);
+          const gapReport = await analyzeExecutionGap(entries, apiKey);
           setLifeThemes({ ...lifeThemes, weekly: themes, lastWeeklyDate: todayStr });
-          setShadowWork({ insight: shadow, lastDate: todayStr });
+          // We reuse shadowWork state slot for the "Execution Gap" as it's part of the Shadow Work / Critical series
+          setShadowWork({ insight: gapReport, lastDate: todayStr });
         } catch (e) {
           console.error("Weekly analysis error:", e);
         }
@@ -367,6 +364,19 @@ export default function App() {
         } catch (e) {
           console.error("Korczak analysis error:", e);
         }
+      }
+
+      // 5. Daily Subconscious Insight (Triggered if after 02:00)
+      const currentHour = now.getHours();
+      if (currentHour >= 2 && majorInsights.length < 4) {
+          // Major Insights now return 4 items, the 4th is the subconscious one.
+          // Handled elsewhere, but we track time here if needed
+          try {
+            const insights = await generateMajorInsights(entries, apiKey, majorInsights);
+            setMajorInsights(insights);
+          } catch (e) {
+            console.error(e);
+          }
       }
     };
 
@@ -424,8 +434,11 @@ export default function App() {
       const { weeklyInsight, dailyGtd, shadowWork, lifeThemes } = useAppStore.getState();
 
       const socraticInstruction = `
-אתה מאמן סוקרטי מתקדם בשם 'ענן המחשבות'. דבר בעברית בלבד.
-תפקידך לעזור למשתמש לחקור את מחשבותיו דרך שאלות פתוחות, הקשבה פעילה ושיקוף.
+אתה מאמן סוקרטי מתקדם וחד בשם 'ענן המחשבות'. דבר בעברית בלבד.
+תפקידך הוא לא רק להקשיב, אלא לאתגר את גיא (PROACTIVE PROBING). 
+אם אתה מזהה סתירה, תירוץ, או "סיפור" שגיא מספר לעצמו כדי להימנע ממאמץ או מכאב - עצור אותו ושאל שאלה נוקבת.
+
+היה "פרקליט השטן" (Shadow Work Coach): חפש את מה שגיא לא אומר. שאל על הפער בין מה שהוא תכנן לעשות (Execution Gap) לבין מה שהוא מדווח עכשיו.
 
 הקשר קבוע לגבי בני משפחה:
 - טלי: אשתי
@@ -434,18 +447,17 @@ export default function App() {
 - נוה: הבן שלי
 
 הקשר נוכחי:
-${weeklyInsight ? `- תובנה שבועית: ${weeklyInsight}` : ''}
-
+${weeklyInsight ? `- תובנה שבועית (כולל צד הצל): ${weeklyInsight}` : ''}
 ${dailyGtd?.insight ? `- GTD רגשי להיום: ${dailyGtd.insight}` : ''}
 ${shadowWork?.insight ? `- נקודת עבודה (Shadow Work): ${shadowWork.insight}` : ''}
 ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחרון: ${lifeThemes.weekly}` : ''}
 
-הנחיות לאימון סוקרטי:
-1. שאל שאלה אחת בכל פעם.
-2. אל תיתן עצות ישירות, אלא כוון את המשתמש למצוא את התשובות בעצמו.
-3. השתמש בטכניקות של שיקוף (Reflective Listening).
-4. אם יש סתירה בין מה שהמשתמש אומר עכשיו לבין התובנות הקודמות, ציין זאת בעדינות כשאלה למחשבה.
-5. השתמש במידע מההקשר הנוכחי כדי להעמיק את השיחה ולשאול שאלות רלוונטיות לתמות החיים או ל-Shadow Work שלו.
+הנחיות לאימון אקטיבי:
+1. אל תהיה מנומס מדי. אם גיא מתחמק, הצף זאת.
+2. שאל שאלות שגורמות לו לעצור ולחשוב (Reflective Probing).
+3. חפש דפוסים בין העבר להווה.
+4. "תקוף" בעדינות הנחות יסוד מוטעות או אמונות מגבילות.
+5. דבר בקצרה כדי לתת לגיא מקום להגיב, אך התערב כשצריך להחזיר את השיחה לעומק.
 `;
 
       setIsLiveActive(true);
@@ -465,7 +477,8 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
             if (finalTranscript && apiKey) {
               try {
                 // Background process the conversation as a diary entry
-                const result = await processTextSession(finalTranscript, apiKey);
+                const currentOpenTasks = useAppStore.getState().entries.flatMap((e: any) => e.tasks.map((t: any) => typeof t === 'string' ? t : t.text));
+                const result = await processTextSession(finalTranscript, apiKey, currentOpenTasks);
                 useAppStore.getState().addEntry(result);
               } catch (e) {
                 console.error("Failed to save live session to diary", e);
@@ -501,13 +514,23 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
     setIsSending(true);
 
     try {
-      const { entries, weeklyInsight, categoricalInsights, chatMessages } = useAppStore.getState();
+      const { entries, weeklyInsight, categoricalInsights, chatMessages, addEntry } = useAppStore.getState();
       const response = await queryInsights(userMsg, entries, apiKey, {
         weeklyInsight: weeklyInsight || undefined,
         categoricalInsights: categoricalInsights || undefined,
         chatHistory: chatMessages || undefined
       });
       addChatMessage('ai', response);
+      
+      // Save Q&A as raw material (DiaryEntry)
+      addEntry({
+        transcript: `שאלה: ${userMsg}\nתשובה: ${response}`,
+        tasks: [],
+        insights: [response],
+        triples: [],
+        topics: ['מענה לשאלה'],
+        mood: 'ניטרלי'
+      });
     } catch (e) {
       console.error(e);
       addChatMessage('ai', 'מצטער, הייתה לי שגיאה בניתוח המידע.');
@@ -535,27 +558,29 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
     ).join('\n');
 
     const customInstruction = `
-      אתה מלווה אישי ומאמן סוקרטי מתקדם בשם 'ענן המחשבות'. הגישה שלך היא לא לתת פתרונות, אלא לעזור לגיא למצוא אותם בעצמו.
-      דבר בעברית בלבד. היה אמפתי, מקשיב עמוק, ומעודד.
+      אתה מלווה אישי, אנליסט דפוסים ומאמן סוקרטי מאתגר בשם 'ענן המחשבות'. 
+      התפקיד שלך הוא להפוך את המפגש הקולי לזמן של "תחקיר עומק" ולא רק פריקה. 
+      דבר בעברית בלבד. היה אמפתי אך נוקב וחד.
 
-      עקרונות האימון הסוקרטי שלך:
-      1. שאל שאלה אחת בלבד בכל פעם.
-      2. התמקד בשאלות עוצמתיות: שאלות הבהרה, ערעור על הנחות יסוד, ודרישת ראיות מהמשתמש למחשבות שלו.
-      3. אל תיתן עצות ישירות או פתרונות מוכנים מראש. תן לגיא להגיע למסקנה לבד.
-      4. השתמש בטכניקת "השתקפות": חזור על מה שגיא אמר במילים שלך כדי לוודא הבנה לפני שתשאל שאלה עמוקה יותר.
+      עקרונות האימון והאתגור:
+      1. פרואקטיביות: אל תחכה שגיא ישאל. אם הוא אומר משהו שסותר הצהרת עבר או תובנה קיימת - התערב מיד וציין זאת.
+      2. חשיפת ה"צל" (Shadow Work): שאל על הפחדים, על מה שמוסתר בתוך המילים, ועל המקומות שבהם גיא עושה לעצמו הנחות.
+      3. ניתוח פער הביצוע (Execution Gap): אם גיא מדבר על משימות, שאל אותו למה משימות קודמות לא בוצעו אם זה המצב בנתונים.
+      4. השתמש בטכניקת "למה" (5 Whys) כדי להגיע לשורש של כל הצהרה רגשית.
+      5. אל תיתן פתרונות! תן לגיא את הכלים המחשבתיים להבין את עצמו.
 
-      להלן ההקשר של התובנות הנוכחיות:
+      להלן ההקשר המלא מהמערכת:
       ${weeklyText}
       ${categoricalText}
       ${korczakText}
 
-      להלן היסטוריית השיחה האחרונה בצאט (כטקסט):
+      היסטוריית הצ'אט האחרונה:
       ${chatSummary}
 
-      להלן 15 המחשבות האחרונות שגיא הקליט (החומר הגולמי):
+      15 מחשבות אחרונות (חומר גולמי לניתוח סתירות):
       ${recentEntries}
 
-      המטרה שלך: לנהל שיחה עמוקה ופתוחה ("Gemini Live"). יש לך גישה לכל המידע הגולמי, התובנות והניתוחים. אל תסכם - תאתגר את גיא, תשאל שאלות קשות ומעוררות מחשבה, ותעזור לו לחבר בין נקודות שונות בחיים שלו.
+      המטרה: להיות המראה הכי חדה של גיא. תהיה המאמן שלא מוותר לו על האמת שלו.
     `.trim();
 
     toggleLiveChat(customInstruction);
@@ -719,7 +744,7 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
       )}
 
       {/* Main Content Area */}
-      <main className="relative z-10 w-full flex-1 flex flex-col items-center px-6 overflow-y-auto pb-[200px] pt-4 custom-scrollbar">
+      <main className="relative z-10 w-full flex-1 flex flex-col px-6 overflow-y-auto pb-[180px] pt-4 custom-scrollbar">
         {activeTab === 'home' && (
           <HomeTab 
             isLiveActive={isLiveActive} 
@@ -727,6 +752,7 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
             liveTranscript={liveTranscript}
             isRecording={isRecording}
             setIsRecording={setIsRecording}
+            handleToggleVoice={handleToggleVoice}
           />
         )}
         {activeTab === 'actions' && <ActionsTab />}
@@ -846,13 +872,14 @@ function NavItem({ label, isActive, onClick }: { id: string; label: string; isAc
 }
 
 function HomeTab({ 
-  isLiveActive, liveStatus, liveTranscript, isRecording, setIsRecording
+  isLiveActive, liveStatus, liveTranscript, isRecording, setIsRecording, handleToggleVoice
 }: { 
   isLiveActive: boolean; 
   liveStatus: LiveChatStatus; 
   liveTranscript: string;
   isRecording: boolean;
   setIsRecording: (val: boolean) => void;
+  handleToggleVoice: (instruction?: string) => void;
 }) {
   const [showTextInput, setShowTextInput] = useState(false);
   const [textInput, setTextInput] = useState('');
@@ -860,7 +887,7 @@ function HomeTab({
   const [isProcessingAudio, setIsProcessingAudio] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
-  const { apiKey, addEntry } = useAppStore();
+  const { apiKey, addEntry, entries } = useAppStore();
   const [recordingTime, setRecordingTime] = useState(0);
   const timerIntervalRef = useRef<number | null>(null);
 
@@ -920,7 +947,8 @@ function HomeTab({
 
         setIsProcessingAudio(true);
         try {
-          const result = await processAudioSession(audioBlob, apiKey);
+          const currentOpenTasks = entries.flatMap((e: any) => e.tasks.map((t: any) => typeof t === 'string' ? t : t.text));
+          const result = await processAudioSession(audioBlob, apiKey, currentOpenTasks);
           addEntry(result);
         } catch (e: any) {
           console.error("Recording process error:", e);
@@ -998,7 +1026,8 @@ function HomeTab({
     if (!textInput.trim() || !apiKey) return;
     setIsProcessingText(true);
     try {
-      const result = await processTextSession(textInput, apiKey);
+      const currentOpenTasks = entries.flatMap((e: any) => e.tasks.map((t: any) => typeof t === 'string' ? t : t.text));
+      const result = await processTextSession(textInput, apiKey, currentOpenTasks);
       addEntry(result);
       setTextInput('');
       setShowTextInput(false);
@@ -1023,7 +1052,7 @@ function HomeTab({
           <button 
             onClick={() => setShowTextInput(!showTextInput)}
             className={cn(
-              "absolute right-[-40px] w-16 h-16 rounded-full flex items-center justify-center shadow-lg transition-all border border-white/20 active:scale-90 bg-gradient-to-tr from-[#FFA000] to-[#FFD54F] text-[#4A2C0A]",
+              "absolute right-[-40px] w-16 h-16 rounded-full flex items-center justify-center shadow-lg transition-all border border-white/20 active:scale-90 bg-gradient-to-tr from-[#FFA000] to-[#FFC107] text-[#0A3B66]",
               showTextInput && "ring-4 ring-white/30"
             )}
           >
@@ -1034,25 +1063,45 @@ function HomeTab({
 
 
         {/* Main Mic Button - Click to Toggle for Reliability */}
-        <button 
-          onClick={() => isRecording ? stopRecording() : startRecording()}
-          className={cn(
-            "relative z-10 w-[180px] h-[180px] bg-gradient-to-t from-[#FFA000] to-[#FFD54F] rounded-full flex items-center justify-center text-white shadow-[0_15px_45px_rgba(255,160,0,0.5)] transition-all",
-            isRecording ? "scale-95 brightness-110 shadow-inner ring-8 ring-white/20" : "hover:scale-105 shadow-[0_12px_40px_rgba(255,160,0,0.4)]"
+        <div className="relative group">
+          <button 
+            onClick={() => isRecording ? stopRecording() : startRecording()}
+            disabled={isLiveActive}
+            className={cn(
+              "relative z-10 w-[180px] h-[180px] bg-gradient-to-t from-[#FFA000] to-[#FFC107] rounded-full flex items-center justify-center text-white shadow-[0_15px_45px_rgba(255,160,0,0.5)] transition-all",
+              isRecording ? "scale-95 brightness-110 shadow-inner ring-8 ring-white/20" : "hover:scale-105 shadow-[0_12px_40px_rgba(255,160,0,0.4)]",
+              isLiveActive && "opacity-20 grayscale cursor-not-allowed"
+            )}
+          >
+            {isRecording ? <Square size={70} fill="white" className="rounded-xl animate-pulse" /> : <Mic size={90} strokeWidth={2.5} />}
+            {isRecording && (
+              <div className="absolute -bottom-10 left-1/2 -translate-x-1/2 bg-white text-[#0D3B66] px-4 py-1.5 rounded-full font-bold shadow-lg animate-bounce">
+                סיים
+              </div>
+            )}
+          </button>
+
+          {/* Left Button: LIVE (Small but visible) */}
+          {!isRecording && (
+            <button 
+              onClick={() => handleToggleVoice()}
+              className={cn(
+                "absolute left-[-50px] top-1/2 -translate-y-1/2 w-16 h-16 rounded-full flex flex-col items-center justify-center shadow-lg transition-all border border-white/20 active:scale-90",
+                isLiveActive 
+                  ? "bg-red-500 text-white ring-4 ring-red-500/30 animate-pulse" 
+                  : "bg-white/20 backdrop-blur-md text-white hover:bg-white/30"
+              )}
+            >
+              <Activity size={24} />
+              <span className="text-[10px] font-bold mt-1 uppercase">LIVE</span>
+            </button>
           )}
-        >
-          {isRecording ? <Square size={70} fill="white" className="rounded-xl animate-pulse" /> : <Mic size={90} strokeWidth={2.5} />}
-          {isRecording && (
-            <div className="absolute -bottom-10 left-1/2 -translate-x-1/2 bg-white text-[#0D3B66] px-4 py-1.5 rounded-full font-bold shadow-lg animate-bounce">
-              סיים
-            </div>
-          )}
-        </button>
+        </div>
       </div>
 
       {/* Text Input Area */}
       {showTextInput && !isLiveActive && !isRecording && (
-        <div className="w-full max-w-md bg-white/10 backdrop-blur-xl rounded-2xl p-4 border border-white/20 shadow-2xl animate-in fade-in slide-in-from-bottom-4 transition-all" dir="rtl">
+        <div className="w-full max-w-md bg-white/20 backdrop-blur-2xl rounded-2xl p-4 border border-white/40 shadow-2xl animate-in fade-in slide-in-from-bottom-4 transition-all" dir="rtl">
           <textarea
             value={textInput}
             onChange={(e) => setTextInput(e.target.value)}
@@ -1070,7 +1119,7 @@ function HomeTab({
             <button 
               onClick={handleSendText}
               disabled={isProcessingText || !textInput.trim()}
-              className="bg-[#FFD54F] text-[#0D3B66] px-6 py-2 rounded-xl font-bold flex items-center gap-2 hover:bg-[#FFE082] transition-all disabled:opacity-50"
+              className="bg-[#FFC107] text-[#0A3B66] px-6 py-2 rounded-xl font-bold flex items-center gap-2 hover:bg-[#FFE082] transition-all disabled:opacity-50"
             >
               {isProcessingText ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
               שמור
@@ -1139,7 +1188,7 @@ function ActionsTab() {
   const otherTasks = allTasks.filter(t => !t.isImportant);
 
   const renderTask = (item: any, idx: number) => (
-    <div key={`${item.entryId}-${item.text}-${idx}`} className="bg-white/10 backdrop-blur-xl rounded-[2rem] p-5 flex items-center justify-between border border-white/10 shadow-lg group hover:bg-white/15 transition-all">
+    <div key={`${item.entryId}-${item.text}-${idx}`} className="bg-[#0D3B66]/40 backdrop-blur-3xl rounded-[2rem] p-5 flex items-center justify-between border border-white/10 shadow-2xl group hover:bg-white/5 transition-all">
       <div className="flex items-center gap-4 flex-1">
         <button 
           onClick={() => toggleTaskImportance(item.entryId, item.text)}
@@ -1160,17 +1209,20 @@ function ActionsTab() {
         </span>
       </div>
       <button 
-        onClick={() => removeTask(item.entryId, item.text)}
-        className="w-10 h-10 rounded-2xl flex items-center justify-center text-white/20 hover:text-emerald-400 hover:bg-emerald-400/10 transition-all ml-2"
-        title="סמן כבוצע"
+        onClick={() => {
+          if (window.confirm(`האם סיימת את המשימה: "${item.text}"?`)) {
+             removeTask(item.entryId, item.text);
+          }
+        }}
+        className="w-10 h-10 rounded-2xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all active:scale-90"
       >
-        <CheckCircle2 size={20} />
+        <Check size={20} />
       </button>
     </div>
   );
 
   return (
-    <div className="w-full h-full flex flex-col space-y-6 pb-4 overflow-y-visible">
+    <div className="w-full flex flex-col space-y-6 pb-12">
       <div className="flex items-center justify-between px-2">
         <h2 className="text-xl font-bold flex items-center gap-3 text-white/90">
           <div className="w-10 h-10 rounded-2xl bg-emerald-400/20 flex items-center justify-center text-emerald-400">
@@ -1186,30 +1238,21 @@ function ActionsTab() {
             <Notebook size={40} strokeWidth={1} />
           </div>
           <p className="text-white/40 font-medium">אין משימות פתוחות כרגע.</p>
-          <p className="text-white/20 text-xs mt-1 italic">דבר איתי והתובנות יהפכו למשימות!</p>
         </div>
       ) : (
         <div className="flex-1 space-y-8 pr-1">
-          {/* Important Tasks */}
           {importantTasks.length > 0 && (
             <div className="space-y-4">
-              <h3 className="text-[10px] font-bold text-[#FFD54F] uppercase tracking-[0.2em] px-4 flex items-center gap-2">
-                <Star size={10} fill="currentColor" />
-                פעולות חשובות
-              </h3>
+              <h3 className="text-[10px] font-bold text-[#FFD54F] uppercase tracking-[0.2em] px-4">פעולות חשובות</h3>
               <div className="space-y-3">
                 {importantTasks.map(renderTask)}
               </div>
             </div>
           )}
 
-          {/* Other Tasks */}
           {otherTasks.length > 0 && (
             <div className="space-y-4">
-              <h3 className="text-[10px] font-bold text-white/30 uppercase tracking-[0.2em] px-4 flex items-center gap-2">
-                <HistoryIcon size={10} />
-                שאר הפעולות
-              </h3>
+              <h3 className="text-[10px] font-bold text-white/20 uppercase tracking-[0.2em] px-4">שאר הפעולות</h3>
               <div className="space-y-3">
                 {otherTasks.map(renderTask)}
               </div>
@@ -1237,14 +1280,32 @@ function InsightsTab({
   handleToggleVoice: () => void;
 }) {
   const { 
-    weeklyInsight, categoricalInsights, 
-    lifeThemes, shadowWork, dailyGtd,
+    majorInsights, setMajorInsights,
     chatMessages, apiKey, entries 
   } = useAppStore();
-  const [showWeekly, setShowWeekly] = useState(false);
-  const [showDailyGtd, setShowDailyGtd] = useState(false);
+  const [showMajorInsights, setShowMajorInsights] = useState(false);
   const [showAllTimeInsights, setShowAllTimeInsights] = useState(false);
-  const [isReading, setIsReading] = useState(false);
+  const [isGeneratingMajor, setIsGeneratingMajor] = useState(false);
+  const [isChatExpanded, setIsChatExpanded] = useState(false);
+
+  const handleGenerateMajor = async () => {
+    if (!apiKey) return;
+    setIsGeneratingMajor(true);
+    try {
+      const insights = await generateMajorInsights(entries, apiKey, majorInsights);
+      setMajorInsights(insights);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsGeneratingMajor(false);
+    }
+  };
+
+  useEffect(() => {
+    if (majorInsights.length === 0 && entries.length > 0 && apiKey) {
+      handleGenerateMajor();
+    }
+  }, [entries.length, apiKey]);
 
   // Stop speech if navigating away
   useEffect(() => {
@@ -1253,407 +1314,210 @@ function InsightsTab({
          (window as any).audioWeekly.pause();
          (window as any).audioWeekly = null;
       }
-      window.speechSynthesis.cancel(); // Added this line
+      window.speechSynthesis.cancel();
     };
   }, []);
 
-  // Using apiKey from the outer scope
+//
 
-  const handleReadWeekly = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    
-    if (isReading) {
-      if ((window as any).audioWeekly) {
-         (window as any).audioWeekly.pause();
-         (window as any).audioWeekly = null;
-      }
-      window.speechSynthesis.cancel();
-      setIsReading(false);
-      return;
-    }
-
-    if (!apiKey) {
-      alert("אנא הגדר מפתח API כדי להשתמש בהקראה.");
-      return;
-    }
-
-    const textToRead = [
-      "סיכום ותובנות שבועיות.",
-      categoricalInsights?.work ? `בעבודה: ${categoricalInsights.work}` : '',
-      categoricalInsights?.family ? `במשפחה: ${categoricalInsights.family}` : '',
-      categoricalInsights?.personal ? `בפן האישי: ${categoricalInsights.personal}` : '',
-      weeklyInsight ? `תובנה שבועית: ${weeklyInsight}` : '',
-      shadowWork?.insight ? `ניתוח הצל: ${shadowWork.insight}` : '',
-      lifeThemes?.weekly ? `תמות חיים: ${lifeThemes.weekly}` : ''
-    ].filter(Boolean).join(' ');
-
-    try {
-      setIsReading(true);
-      const audioUrl = await synthesizeSpeech(textToRead, apiKey);
-      const audio = new Audio(audioUrl);
-      (window as any).audioWeekly = audio;
-      
-      audio.onended = () => {
-        setIsReading(false);
-        (window as any).audioWeekly = null;
-      };
-      
-      audio.onerror = () => {
-        setIsReading(false);
-        (window as any).audioWeekly = null;
-      };
-
-      await audio.play();
-    } catch (error: any) {
-      console.error("Cloud TTS Error (Weekly):", error);
-      
-      // Attempt browser fallback
-      try {
-        console.log("Attempting browser TTS fallback for weekly insights...");
-        const utterance = new SpeechSynthesisUtterance(textToRead);
-        utterance.lang = 'he-IL';
-        
-        // Try to find a Hebrew voice
-        const voices = window.speechSynthesis.getVoices();
-        const hebrewVoice = voices.find(v => v.lang.startsWith('he')) || voices[0];
-        if (hebrewVoice) utterance.voice = hebrewVoice;
-        
-        utterance.onend = () => setIsReading(false);
-        utterance.onerror = () => setIsReading(false);
-        
-        window.speechSynthesis.speak(utterance);
-      } catch (fallbackError) {
-        console.error("Browser TTS Fallback Error (Weekly):", fallbackError);
-        setIsReading(false);
-        alert(`שגיאת הקראה: ${error.message}\n\nנא לוודא ש-Cloud Text-to-Speech API מופעל בחשבון ה-Google Cloud שלך.`);
-      }
-    }
-  };
-
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // History scroll logic moved to App level
-  }, [chatMessages.length]);
+    if (isChatExpanded) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages.length, isChatExpanded]);
 
   return (
-    <div className="w-full h-full flex flex-col space-y-4 pb-4 overflow-y-visible">
-      {/* Main AI Question Input (Relocated from Home) */}
-      <div className="w-full px-2 pt-2">
-        <div className="bg-black/20 backdrop-blur-xl rounded-[2rem] border border-white/10 p-2 flex gap-2 items-center shadow-lg">
+    <div className="w-full flex flex-col space-y-4 pb-12">
+      {/* Main AI Question Input (Now at Top) */}
+      <div className="w-full px-2 pt-2 sticky top-0 z-10 bg-gradient-to-b from-[#89CFF0]/80 to-transparent pb-4">
+        <div className="bg-white/30 backdrop-blur-2xl rounded-[2rem] border border-white/40 p-2 flex gap-2 items-center shadow-xl">
           <input 
             type="text" 
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSend()}
             disabled={isLiveActive}
-            placeholder={isLiveActive ? "הצאט הקולי פעיל..." : "שאל אותי על הכל (היסטוריה, תמות, דפוסים)..."}
-            className="flex-1 bg-white/5 rounded-2xl px-5 py-3.5 outline-none focus:ring-2 focus:ring-[#FFD54F]/30 transition-all text-sm placeholder:text-white/20 shadow-inner border border-white/5 disabled:opacity-50"
+            placeholder={isLiveActive ? "הצאט הקולי פעיל..." : "שאל אותי על הכל..."}
+            className="flex-1 bg-white/20 rounded-2xl px-5 py-3.5 outline-none focus:ring-2 focus:ring-[#FFC107]/50 transition-all text-sm placeholder:text-[#0A3B66]/60 shadow-inner border border-white/20 disabled:opacity-50 text-[#0A3B66] font-medium"
           />
           <button 
             onClick={() => handleToggleVoice()}
             className={cn(
-              "w-12 h-12 rounded-2xl flex items-center justify-center transition-all shadow-lg active:scale-95 group",
-              isLiveActive ? "bg-red-500 text-white animate-pulse" : "bg-white/10 text-white/60 hover:bg-white/20"
+              "w-12 h-12 rounded-2xl flex items-center justify-center transition-all shadow-lg active:scale-95",
+              isLiveActive ? "bg-red-500 text-white animate-pulse" : "bg-white/40 text-[#0A3B66] hover:bg-white/60"
             )}
-            title={isLiveActive ? "עצור שיחה קולית" : "התחל שיחה קולית"}
+            title="שיחה קולית"
           >
             <Mic size={20} />
+          </button>
+          <button 
+            onClick={() => setIsChatExpanded(!isChatExpanded)}
+            className={cn(
+              "w-12 h-12 rounded-2xl flex items-center justify-center transition-all shadow-lg active:scale-95",
+              isChatExpanded ? "bg-[#FFC107] text-[#0A3B66]" : "bg-white/40 text-[#0A3B66] hover:bg-white/60"
+            )}
+            title={isChatExpanded ? "סגור היסטוריה" : "הצג היסטוריה"}
+          >
+            <HistoryIcon size={20} />
           </button>
           {!isLiveActive && (
             <button 
               onClick={handleSend}
               disabled={!input.trim() || isSending}
-              className="w-12 h-12 bg-[#FFD54F] text-[#0D3B66] rounded-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-lg disabled:opacity-50 disabled:scale-100 group"
+              className="w-12 h-12 bg-[#FFC107] text-[#0A3B66] rounded-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-lg disabled:opacity-50"
             >
-              {isSending ? <Loader2 size={18} className="animate-spin" /> : <Send size={20} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />}
+              {isSending ? <Loader2 size={18} className="animate-spin" /> : <Send size={20} />}
             </button>
           )}
         </div>
       </div>
 
-      {!isLiveActive && (
-        <div className="flex justify-start px-2">
-          <div className="flex items-center gap-2 px-3 py-1 bg-white/5 rounded-full border border-white/5 text-[10px] text-white/40 uppercase tracking-widest font-bold">
-            <Brain size={12} />
-            ניתוח חכם מופעל
-          </div>
-        </div>
-      )}
-
-      {/* Korczak Time Audit - Collapsible */}
-      <KorczakInsight />
-
-      {/* Daily Emotional Insight - Collapsible */}
-      {dailyGtd && (
-        <div className="bg-gradient-to-r from-[#FFD54F]/20 to-[#FFA000]/10 backdrop-blur-xl border border-[#FFD54F]/30 rounded-[2rem] overflow-hidden shadow-lg transition-all">
-          <div 
-            role="button"
-            tabIndex={0}
-            onClick={() => setShowDailyGtd(!showDailyGtd)}
-            onKeyDown={(e) => e.key === 'Enter' && setShowDailyGtd(!showDailyGtd)}
-            className="w-full p-5 flex items-center justify-between hover:bg-white/5 transition-colors group cursor-pointer"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-[#FFD54F] rounded-2xl flex items-center justify-center text-[#0D3B66] group-hover:scale-110 transition-transform">
-                <CheckCircle2 size={20} />
+      {/* Expandable Chat History (Now below Input) */}
+      {isChatExpanded && (
+        <div className="flex-1 min-h-[400px] max-h-[70vh] overflow-y-auto px-2 space-y-4 custom-scrollbar bg-white/5 rounded-[2rem] border border-white/5 mx-2 p-4 animate-in slide-in-from-top-4 duration-300">
+          {chatMessages.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center text-white/20 p-8 text-center">
+              <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center mb-4">
+                <Brain size={32} />
               </div>
-              <div className="text-right">
-                <span className="block font-bold text-white/90 text-sm">תובנה רגשית יומית עיקרית</span>
-                <span className="block text-[10px] text-[#FFD54F]/60 uppercase tracking-widest mt-0.5">מיקוד ודיוק רגשי</span>
-              </div>
+              <p className="text-sm">עדיין לא שלחת שאלות. שאל אותי כל דבר על המחשבות והתובנות שלך.</p>
             </div>
-            <div className="flex items-center gap-3">
-              <SpeechButton 
-                text={dailyGtd.insight || ''} 
-                className="w-8 h-8 bg-white/5 hover:bg-white/10 text-white/40" 
-                onClick={(e) => e.stopPropagation()} 
-              />
-              <div className="text-white/30">
-                {showDailyGtd ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-              </div>
-            </div>
-          </div>
-          
-          {showDailyGtd && (
-            <div className="p-5 pt-0 animate-in fade-in slide-in-from-top-2">
-              <div className="bg-white/5 rounded-2xl p-4 border border-white/5 max-h-[300px] overflow-y-auto custom-scrollbar">
-                <div className="text-sm text-white/90 leading-relaxed space-y-2">
-                  {dailyGtd.insight?.split('\n').map((line, i) => (
-                    <p key={i} className={line.trim().startsWith('*') || line.trim().startsWith('-') ? "pr-4 relative before:content-['•'] before:absolute before:right-0 before:text-[#FFD54F]" : ""}>
-                      {line.replace(/^(\*|-)\s*/, '')}
-                    </p>
-                  ))}
+          ) : (
+            <div className="space-y-4">
+              {chatMessages.map((msg, idx) => (
+                <div 
+                  key={idx} 
+                  className={cn(
+                    "flex flex-col max-w-[85%] animate-in fade-in slide-in-from-bottom-2",
+                    msg.role === 'user' ? "mr-auto text-right" : "ml-auto text-left"
+                  )}
+                >
+                  <div className={cn(
+                    "px-4 py-3 rounded-[1.5rem] text-sm leading-relaxed shadow-sm",
+                    msg.role === 'user' 
+                      ? "bg-[#FFD54F] text-[#0D3B66] rounded-tr-none" 
+                      : "bg-white/10 text-white/90 border border-white/5 rounded-tl-none"
+                  )}>
+                    {msg.content}
+                  </div>
+                  <span className="text-[9px] text-white/30 mt-1 px-1">
+                    {new Date(msg.timestamp).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })}
+                  </span>
                 </div>
-                <div className="mt-3 pt-3 border-t border-white/5 flex justify-end">
-                  <SpeechButton text={dailyGtd.insight || ''} />
-                </div>
-              </div>
+              ))}
+              <div ref={chatEndRef} />
             </div>
           )}
         </div>
       )}
 
-      {/* Weekly & Categorical Insights (Collapsible) */}
-      <div className="bg-white/10 backdrop-blur-xl border border-white/10 rounded-[2rem] overflow-hidden shadow-xl transition-all">
+      {/* 3 Major Insights - Unified Section */}
+      <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all">
         <div 
-          role="button"
-          tabIndex={0}
-          onClick={() => setShowWeekly(!showWeekly)}
-          onKeyDown={(e) => e.key === 'Enter' && setShowWeekly(!showWeekly)}
-          className="w-full p-5 flex items-center justify-between hover:bg-white/5 transition-colors group cursor-pointer"
+          onClick={() => setShowMajorInsights(!showMajorInsights)}
+          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors group cursor-pointer"
         >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-[#FFD54F]/20 flex items-center justify-center text-[#FFD54F] group-hover:scale-110 transition-transform">
-              <Brain size={20} />
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-[#FFC107] rounded-2xl flex items-center justify-center text-[#0A3B66] shadow-[0_0_20px_rgba(255,213,79,0.4)] group-hover:rotate-12 transition-transform">
+              <Star size={24} />
             </div>
             <div className="text-right">
-              <span className="block font-bold text-white/90 text-sm">סיכום ותובנות שבועיות</span>
-              <span className="block text-[10px] text-white/40 uppercase tracking-widest mt-0.5">ניתוח חכם של השבוע שלך</span>
+              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">4 תובנות עיקריות</span>
+              <span className="block text-xs text-[#0A3B66]/60 uppercase tracking-widest mt-1">גלובלי, שבועי, משמעותי ותת-מודע</span>
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <button
-              onClick={handleReadWeekly}
-              className={cn(
-                "w-8 h-8 rounded-full flex items-center justify-center transition-all",
-                isReading ? "bg-[#FFD54F] text-[#0D3B66] animate-pulse" : "bg-white/5 text-white/40 hover:bg-white/10 hover:text-white"
-              )}
-            >
-              {isReading ? <VolumeX size={16} /> : <Volume2 size={16} />}
-            </button>
-            <div className="text-white/30">
-              {showWeekly ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+             {isGeneratingMajor ? (
+               <Loader2 size={20} className="animate-spin text-[#0A3B66]" />
+             ) : (
+               <button 
+                 onClick={(e) => { e.stopPropagation(); handleGenerateMajor(); }}
+                 className="p-2 text-[#0A3B66]/40 hover:text-[#FFC107] transition-colors"
+               >
+                 <Activity size={18} />
+               </button>
+             )}
+            <div className="text-[#0A3B66]/30">
+              {showMajorInsights ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
             </div>
           </div>
         </div>
-        
-        {showWeekly && (
-          <div className="p-5 pt-0 space-y-4 animate-in fade-in slide-in-from-top-2 max-h-[500px] overflow-y-auto custom-scrollbar">
-            {categoricalInsights ? (
-              <div className="grid gap-2">
-                <InsightCard title="עבודה" content={categoricalInsights.work} icon={<div className="w-2.5 h-2.5 bg-[#FFB300] rounded-full shadow-[0_0_8px_#FFB300]" />} />
-                <InsightCard title="משפחה" content={categoricalInsights.family} icon={<div className="w-2.5 h-2.5 bg-[#FF8F00] rounded-full shadow-[0_0_8px_#FF8F00]" />} />
-                <InsightCard title="אישי" content={categoricalInsights.personal} icon={<div className="w-2.5 h-2.5 bg-[#FDD835] rounded-full shadow-[0_0_8px_#FDD835]" />} />
-              </div>
+
+        {showMajorInsights && (
+          <div className="p-6 pt-0 space-y-4 animate-in fade-in slide-in-from-top-2 cursor-default">
+            {majorInsights.length > 0 ? (
+              majorInsights.map((insight, idx) => (
+                <div key={idx} className="bg-white/40 rounded-3xl p-5 border border-white/20 group relative hover:bg-white/60 transition-all">
+                  <div className="flex justify-between items-start mb-2 sticky top-0 bg-white/20 backdrop-blur-md z-10 p-2 mx-[-8px] rounded-xl border border-white/10 shadow-sm">
+                    <span className="text-[10px] font-bold text-[#0A3B66]/60 uppercase tracking-tighter">
+                      {idx === 0 ? "תובנה גלובלית" : idx === 1 ? "תובנה שבועית" : idx === 2 ? "תובנה נבחרת" : "תת מודע"}
+                    </span>
+                    <SpeechButton text={insight} className="w-8 h-8 opacity-40 group-hover:opacity-100 text-[#0A3B66]" />
+                  </div>
+                  <p className="text-sm leading-relaxed text-[#0A3B66] whitespace-pre-wrap break-words font-medium">
+                    {insight}
+                  </p>
+                </div>
+              ))
             ) : (
-              <div className="flex items-center gap-2 text-xs text-white/50 italic py-4 justify-center">
-                <Loader2 size={14} className="animate-spin" />
-                מנתח את האירועים האחרונים...
-              </div>
-            )}
-            
-            {weeklyInsight && (
-              <div className="pt-2">
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-[10px] font-bold text-[#FFD54F] uppercase tracking-[0.2em] flex items-center gap-2">
-                    <Star size={12} />
-                    תובנה שבועית
-                  </h4>
-                  <SpeechButton text={weeklyInsight} className="w-6 h-6" />
-                </div>
-                <div className="bg-white/5 rounded-2xl p-4 border border-white/5 italic">
-                  <p className="text-sm leading-relaxed text-white/80">{weeklyInsight}</p>
-                </div>
-              </div>
-            )}
-
-            {/* Deep Analysis Section (Shadow Work & Life Themes) */}
-            {(shadowWork || lifeThemes) && (
-              <div className="pt-4 border-t border-white/10 space-y-4">
-                <h4 className="text-[10px] font-bold text-emerald-400 uppercase tracking-[0.2em] mb-2 flex items-center gap-2">
-                  <Brain size={12} />
-                  ניתוח עומק (Advanced)
-                </h4>
-                
-                {shadowWork?.insight && (
-                  <div className="bg-indigo-500/10 rounded-2xl p-4 border border-indigo-500/20 group relative">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[9px] font-bold text-indigo-400 uppercase">Shadow Work</span>
-                      <SpeechButton text={shadowWork.insight} className="opacity-0 group-hover:opacity-100 transition-opacity w-6 h-6" />
-                    </div>
-                    <p className="text-xs leading-relaxed text-white/80 italic">{shadowWork.insight}</p>
-                  </div>
-                )}
-
-                {lifeThemes?.weekly && (
-                  <div className="bg-amber-500/10 rounded-2xl p-4 border border-amber-500/20 group relative">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[9px] font-bold text-amber-400 uppercase">תמות חיים שבועיות</span>
-                      <SpeechButton text={lifeThemes.weekly} className="opacity-0 group-hover:opacity-100 transition-opacity w-6 h-6" />
-                    </div>
-                    <p className="text-xs leading-relaxed text-white/80">{lifeThemes.weekly}</p>
-                  </div>
-                )}
-
-                {lifeThemes?.monthly && (
-                  <div className="bg-purple-500/10 rounded-2xl p-4 border border-purple-500/20 group relative">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[9px] font-bold text-purple-400 uppercase">ניתוח חודשי ארוך טווח</span>
-                      <SpeechButton text={lifeThemes.monthly} className="opacity-0 group-hover:opacity-100 transition-opacity w-6 h-6" />
-                    </div>
-                    <p className="text-xs leading-relaxed text-white/80">{lifeThemes.monthly}</p>
-                  </div>
-                )}
+              <div className="text-center py-8 text-white/40 italic text-sm">
+                מעבד תובנות חדשות...
               </div>
             )}
           </div>
         )}
       </div>
 
-      {/* All Time Insights History (Collapsible) */}
-      <div className="bg-white/5 backdrop-blur-xl border border-white/5 rounded-[2rem] overflow-hidden shadow-lg transition-all mt-4">
+
+      {/* Insights History */}
+      <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2rem] overflow-hidden shadow-2xl mt-4">
         <div 
-          role="button"
-          tabIndex={0}
           onClick={() => setShowAllTimeInsights(!showAllTimeInsights)}
-          onKeyDown={(e) => e.key === 'Enter' && setShowAllTimeInsights(!showAllTimeInsights)}
-          className="w-full p-5 flex items-center justify-between hover:bg-white/10 transition-colors group cursor-pointer"
+          className="w-full p-5 flex items-center justify-between hover:bg-white/10 cursor-pointer"
         >
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-blue-400/20 flex items-center justify-center text-blue-400 group-hover:scale-110 transition-transform">
+            <div className="w-10 h-10 rounded-2xl bg-blue-400/20 flex items-center justify-center text-blue-400">
               <HistoryIcon size={20} />
             </div>
-            <div className="text-right">
-              <span className="block font-bold text-white/90 text-sm">היסטוריית תובנות (כל הזמנים)</span>
-              <span className="block text-[10px] text-white/40 uppercase tracking-widest mt-0.5">כל התובנות שנאספו אי פעם</span>
-            </div>
+            <span className="font-bold text-white/90 text-sm">היסטוריית תובנות</span>
           </div>
-          <div className="flex items-center gap-3 text-white/30">
+          <div className="text-white/30">
             {showAllTimeInsights ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
           </div>
         </div>
-        
         {showAllTimeInsights && (
-          <div className="p-5 pt-0 space-y-4 animate-in fade-in slide-in-from-top-2 max-h-[400px] overflow-y-auto custom-scrollbar">
-            {entries.filter(e => e.insights && e.insights.length > 0).length === 0 ? (
-               <div className="text-center py-6 text-white/40 text-sm italic">
-                 עדיין אין היסטוריית תובנות. ההיסטוריה תתמלא עם הזמן.
-               </div>
-            ) : (
-               <div className="space-y-4">
-                 {entries.filter(e => e.insights && e.insights.length > 0).map(entry => (
-                   <div key={entry.id} className="bg-white/5 rounded-2xl p-4 border border-white/5 group relative">
-                     <div className="flex items-center justify-between mb-2">
-                       <span className="text-[10px] text-white/40 font-mono">
-                         {new Date(entry.timestamp).toLocaleDateString('he-IL', { year: 'numeric', month: 'long', day: 'numeric' })}
-                       </span>
-                       <SpeechButton text={entry.insights.join(' ')} className="w-6 h-6 opacity-0 group-hover:opacity-100 transition-opacity" />
-                     </div>
-                     <div className="text-sm leading-relaxed text-white/80 space-y-1">
-                       {entry.insights.map((insight: string, idx: number) => (
-                         <div key={idx}>
-                           {insight.split('\n').filter((l: string) => l.trim()).map((line: string, i: number) => (
-                             <p key={i} className={line.trim().startsWith('*') || line.trim().startsWith('-') ? "pr-4 relative before:content-['•'] before:absolute before:right-0 before:text-blue-400" : ""}>
-                               {line.replace(/^(\*|-)\s*/, '')}
-                             </p>
-                           ))}
-                         </div>
-                       ))}
-                     </div>
-                   </div>
-                 ))}
-               </div>
-            )}
+          <div className="p-5 pt-0 space-y-4">
+            {entries.filter(e => e.insights && e.insights.length > 0).map(entry => (
+              <div key={entry.id} className="bg-white/40 rounded-2xl p-4 border border-white/20 shadow-sm transition-all hover:bg-white/60">
+                <div className="text-[10px] text-[#0A3B66]/50 mb-2 font-bold uppercase tracking-tight">
+                  {new Date(entry.timestamp).toLocaleDateString('he-IL')}
+                </div>
+                <div className="text-sm text-[#0A3B66] font-medium leading-relaxed">
+                  {entry.insights.join(' ')}
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>
-
     </div>
   );
 }
 
-function InsightCard({ title, content, icon }: { title: string; content: string; icon: React.ReactNode }) {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const cardRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (isExpanded && cardRef.current) {
-      setTimeout(() => {
-        cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 100);
-    }
-  }, [isExpanded]);
-  
-  return (
-    <div 
-      ref={cardRef}
-      onClick={() => setIsExpanded(!isExpanded)}
-      className={cn(
-        "bg-white/5 rounded-2xl p-4 border border-white/5 cursor-pointer transition-all hover:bg-white/10",
-        isExpanded ? "scale-[1.02] shadow-lg ring-1 ring-[#FFD54F]/30" : "scale-100"
-      )}
-    >
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center justify-center min-w-[1.25rem]">
-            {icon}
-          </div>
-          <h4 className="text-sm font-bold text-white/60">{title}</h4>
-        </div>
-        <div className="flex items-center gap-2">
-          <SpeechButton text={content} className="w-6 h-6" />
-          <div className="text-white/30">
-            {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-          </div>
-        </div>
-      </div>
-      {isExpanded && (
-        <p className="text-sm leading-relaxed text-white/90 mt-3 animate-in fade-in slide-in-from-top-2">
-          {content}
-        </p>
-      )}
-    </div>
-  );
-}
+//
 
 function HistoryTab() {
   const { entries, clearEntries } = useAppStore();
 
   return (
-    <div className="w-full flex flex-col space-y-6 pb-10 overflow-y-visible">
+    <div className="w-full flex flex-col space-y-6 pb-12">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold flex items-center gap-2">
-          <HistoryIcon className="text-blue-300" />
+        <h2 className="text-xl font-bold flex items-center gap-2 text-[#0A3B66]">
+          <div className="w-10 h-10 rounded-2xl bg-[#FFC107]/20 flex items-center justify-center text-[#FFC107] shadow-sm">
+            <HistoryIcon size={20} />
+          </div>
           יומן מחשבות
         </h2>
         {entries.length > 0 && (

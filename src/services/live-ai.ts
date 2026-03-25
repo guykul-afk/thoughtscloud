@@ -1,8 +1,9 @@
 /**
  * Real-time Voice Service for Gemini Multimodal Live API
- * Handles WebSocket connection, PCM audio streaming (mic to AI), 
- * and PCM audio playback (AI to speakers).
+ * Uses the official @google/genai SDK with ai.live.connect()
  */
+
+import { GoogleGenAI, Modality } from '@google/genai';
 
 export type LiveChatStatus = 'disconnected' | 'connecting' | 'connected' | 'listening' | 'speaking' | 'error';
 
@@ -17,7 +18,7 @@ export interface LiveChatOptions {
 }
 
 export class GeminiLiveService {
-    private ws: WebSocket | null = null;
+    private session: any = null;
     private audioContext: AudioContext | null = null;
     private mediaStream: MediaStream | null = null;
     private processor: ScriptProcessorNode | null = null;
@@ -27,121 +28,131 @@ export class GeminiLiveService {
 
     constructor(options: LiveChatOptions) {
         this.options = {
-            model: 'gemini-2.0-flash',
+            model: 'gemini-2.0-flash', // General Availability model for Live API
             ...options
         };
     }
 
     private setStatus(status: LiveChatStatus) {
+        console.log(`TRACE: GeminiLiveService - Status Change: ${status}`);
         this.options.onStatusChange?.(status);
     }
 
     public async connect() {
-        if (this.ws) return;
+        if (this.session) {
+            console.log('TRACE: GeminiLiveService - Session already exists, skipping connect');
+            return;
+        }
 
         this.setStatus('connecting');
 
         try {
-            // Multimodal Live API endpoint
-            const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BiDiGenerateContent?key=${this.options.apiKey}`;
+            console.log('TRACE: GeminiLiveService - Initializing GoogleGenAI SDK...');
+            const ai = new GoogleGenAI({ 
+                apiKey: this.options.apiKey
+            });
 
-            this.ws = new WebSocket(url);
-            this.ws.binaryType = 'arraybuffer';
-
-            this.ws.onopen = () => {
-                this.sendSetup();
-                this.setStatus('connected');
-                this.startMic();
+            const config: any = {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: {
+                    voiceConfig: {
+                        prebuiltVoiceConfig: {
+                            voiceName: this.options.voice || 'Aoede'
+                        }
+                    }
+                }
             };
 
-            this.ws.onmessage = async (event) => {
-                const response = JSON.parse(new TextDecoder().decode(event.data));
-                this.handleResponse(response);
-            };
+            if (this.options.systemInstruction) {
+                config.systemInstruction = {
+                    parts: [{ text: this.options.systemInstruction }]
+                };
+            }
 
-            this.ws.onerror = (e) => {
-                console.error("WebSocket Error Detail:", e);
-                const errorMsg = `חיבור ה-WebSocket נכשל.
-וודא שהגדרת את הדומיין כמורשה ב-Google Cloud Console.
-(Authorized JavaScript Origins)`;
-                this.options.onError?.(errorMsg);
-                this.setStatus('error');
-            };
+            console.log(`TRACE: GeminiLiveService - Attempting ai.live.connect to model: ${this.options.model}...`);
 
-            this.ws.onclose = () => {
-                this.stop();
-            };
+            this.session = await ai.live.connect({
+                model: this.options.model!,
+                config,
+                callbacks: {
+                    onopen: () => {
+                        console.log('TRACE: GeminiLiveService - CALLBACK: onopen');
+                        this.setStatus('connected');
+                        this.startMic();
+                    },
+                    onmessage: (message: any) => {
+                        // Minimal TRACE for message to avoid bloating logs
+                        this.handleResponse(message);
+                    },
+                    onerror: (e: any) => {
+                        console.error('TRACE: GeminiLiveService - CALLBACK: onerror', e);
+                        const msg = e?.message || 'שגיאת WebSocket/SDK לא ידועה';
+                        this.options.onError?.(`שגיאת חיבור ל-AI: ${msg}`);
+                        this.setStatus('error');
+                    },
+                    onclose: (e: any) => {
+                        console.log(`TRACE: GeminiLiveService - CALLBACK: onclose. Code: ${e?.code}, Reason: ${e?.reason}`);
+                        this.cleanup();
+                    }
+                }
+            });
+
+            console.log('TRACE: GeminiLiveService - ai.live.connect promise resolved');
 
         } catch (error: any) {
-            this.options.onError?.(error.message);
+            console.error('TRACE: GeminiLiveService - Connection EXCEPTION:', error);
+            this.options.onError?.(error.message || 'חריגה בהתחברות ל-AI');
             this.setStatus('error');
         }
     }
 
-    private sendSetup() {
-        const setupMessage = {
-            setup: {
-                model: `models/${this.options.model}`,
-                generation_config: {
-                    response_modalities: ["AUDIO"],
-                    speech_config: {
-                        voice_config: {
-                            prebuilt_voice_config: {
-                                voice_name: this.options.voice || "Aoede" // Aoede often sounds good for Hebrew
-                            }
-                        }
-                    }
-                },
-                system_instruction: {
-                    parts: [{ text: this.options.systemInstruction || "You are a helpful assistant." }]
-                }
-            }
-        };
-        this.ws?.send(JSON.stringify(setupMessage));
-    }
-
     private async startMic() {
+        console.log('TRACE: GeminiLiveService - Starting Microphone sequences...');
         try {
             this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+            console.log('TRACE: GeminiLiveService - AudioContext created. Requesting getUserMedia...');
+            
             this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+            console.log('TRACE: GeminiLiveService - Mic access GRANTED');
 
-            // 16kHz, Mono, 16-bit PCM as required by Gemini Live
+            if (!this.audioContext || !this.session) {
+                console.warn('TRACE: GeminiLiveService - AudioContext or Session lost during mic request');
+                return;
+            }
+
+            const source = this.audioContext.createMediaStreamSource(this.mediaStream);
             this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
 
             this.processor.onaudioprocess = (e) => {
                 const inputData = e.inputBuffer.getChannelData(0);
-                // Convert Float32 to Int16
                 const int16Data = new Int16Array(inputData.length);
                 for (let i = 0; i < inputData.length; i++) {
                     int16Data[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
                 }
 
-                // Pack into base64 for the API
-                if (this.ws?.readyState === WebSocket.OPEN) {
+                if (this.session && this.session.readyState === 1) { // 1 = OPEN in some SDK versions, or check active
                     const base64Audio = btoa(String.fromCharCode(...new Uint8Array(int16Data.buffer)));
-                    this.ws.send(JSON.stringify({
-                        realtime_input: {
-                            media_chunks: [{
-                                data: base64Audio,
-                                mime_type: "audio/pcm;rate=16000"
-                            }]
+                    this.session.sendRealtimeInput({
+                        audio: {
+                            data: base64Audio,
+                            mimeType: 'audio/pcm;rate=16000'
                         }
-                    }));
+                    });
                 }
             };
 
             source.connect(this.processor);
             this.processor.connect(this.audioContext.destination);
-            
-            // Setup Web Speech API for Hebrew transcription of the user's side
+            console.log('TRACE: GeminiLiveService - Audio chain CONNECTED');
+
+            // Web Speech API for Hebrew transcription
             const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
             if (SpeechRecognition) {
                 this.recognition = new SpeechRecognition();
                 this.recognition.lang = 'he-IL';
                 this.recognition.continuous = true;
                 this.recognition.interimResults = false;
-                
+
                 this.recognition.onresult = (event: any) => {
                     let finalTranscript = '';
                     for (let i = event.resultIndex; i < event.results.length; ++i) {
@@ -155,24 +166,22 @@ export class GeminiLiveService {
                 };
 
                 this.recognition.onend = () => {
-                    if (this.ws?.readyState === WebSocket.OPEN) {
+                    if (this.session) {
                         try { this.recognition?.start(); } catch (e) {}
                     }
                 };
 
                 try { this.recognition.start(); } catch (e) {
-                    console.log("Could not start SpeechRecognition", e);
+                    console.log('Could not start SpeechRecognition', e);
                 }
             }
 
             this.setStatus('listening');
 
         } catch (error: any) {
-            console.error("Mic Access Error:", error);
+            console.error('TRACE: GeminiLiveService - Mic Access EXCEPTION:', error);
             if (error.name === 'NotAllowedError') {
-                this.options.onError?.("הגישה למיקרופון נחסמה. אנא אפשר גישה בהגדרות הדפדפן שלך.");
-            } else if (error.name === 'NotFoundError') {
-                this.options.onError?.("לא נמצא מיקרופון מחובר.");
+                this.options.onError?.('הגישה למיקרופון נחסמה. אנא אפשר גישה בהגדרות הדפדפן שלך.');
             } else {
                 this.options.onError?.(`שגיאת מיקרופון: ${error.message}`);
             }
@@ -181,15 +190,24 @@ export class GeminiLiveService {
     }
 
     private handleResponse(response: any) {
-        if (response.serverContent?.modelTurn?.parts) {
-            for (const part of response.serverContent.modelTurn.parts) {
-                if (part.inlineData?.mimeType === 'audio/pcm;rate=24000') {
+        // Detect serverContent structure
+        const content = response.serverContent;
+        if (content?.modelTurn?.parts) {
+            for (const part of content.modelTurn.parts) {
+                if (part.inlineData) {
+                    console.log('TRACE: GeminiLiveService - Receiving Audio Chunk');
                     this.playAudioChunk(part.inlineData.data);
                 }
                 if (part.text) {
+                    console.log(`TRACE: GeminiLiveService - Receiving Text: ${part.text.substring(0, 20)}...`);
                     this.options.onTranscriptUpdate?.(part.text, false);
                 }
             }
+        }
+        
+        // Handle tool calls if any
+        if (response.toolCall) {
+            console.log('TRACE: GeminiLiveService - Received Tool Call (not implemented)');
         }
     }
 
@@ -218,7 +236,6 @@ export class GeminiLiveService {
         source.buffer = audioBuffer;
         source.connect(this.audioContext.destination);
 
-        // Schedule playback to avoid gaps
         const startTime = Math.max(this.audioContext.currentTime, this.nextStreamTime);
         source.start(startTime);
         this.nextStreamTime = startTime + audioBuffer.duration;
@@ -230,9 +247,7 @@ export class GeminiLiveService {
         };
     }
 
-    public stop() {
-        this.ws?.close();
-        this.ws = null;
+    private cleanup() {
         this.processor?.disconnect();
         this.audioContext?.close();
         this.audioContext = null;
@@ -243,6 +258,13 @@ export class GeminiLiveService {
             try { this.recognition.stop(); } catch (e) {}
             this.recognition = null;
         }
+        this.session = null;
         this.setStatus('disconnected');
+    }
+
+    public stop() {
+        console.log('TRACE: GeminiLiveService - Manual STOP triggered');
+        this.session?.close();
+        this.cleanup();
     }
 }

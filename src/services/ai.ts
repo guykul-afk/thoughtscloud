@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { getStartOfCurrentWeek } from '../utils/dateUtils';
 
 // Initialize the SDK with the user-provided API key
 const getGenAI = (apiKey: string) => {
@@ -29,9 +30,11 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 export interface ProcessedSession {
     transcript: string;
     tasks: string[];
+    taskUpdates?: { originalText: string; updatedText: string }[];
     insights: string[];
     topics: string[];
     mood: string;
+    triples: [string, string, string][];
 }
 
 // Optimized Model Selection Logic based on user's confirmed availability
@@ -75,7 +78,7 @@ const parseAIResponse = (text: string): any => {
     }
 };
 
-export async function processAudioSession(audioBlob: Blob, apiKey: string): Promise<ProcessedSession> {
+export async function processAudioSession(audioBlob: Blob, apiKey: string, currentOpenTasks: string[] = []): Promise<ProcessedSession> {
     const genAI = getGenAI(apiKey);
     // Removed responseMimeType to fix "Unknown name" 400 error
     const model = genAI.getGenerativeModel({
@@ -91,14 +94,32 @@ export async function processAudioSession(audioBlob: Blob, apiKey: string): Prom
   
   Please analyze the audio and provide exactly the following in clear, valid JSON format (do not include markdown code block syntax around the JSON):
   {
-    "transcript": "The full exact transcript of what was said. If there are multiple speakers (Guy and AI), label them. MUST BE IN HEBREW.",
-    "tasks": ["Array of practical tasks or actionable items mentioned in the audio. MUST BE IN HEBREW.", ...],
-    "insights": ["Array of psychological or general insights derived from the entry for Guy. MUST BE IN HEBREW.", ...],
+    "transcript": "The full exact transcript. MUST BE IN HEBREW.",
+    "tasks": ["Array of NEW practical tasks or actionable items. MUST BE IN HEBREW.", ...],
+    "taskUpdates": [{"originalText": "existing task text", "updatedText": "new version"}],
+    "insights": ["Array of psychological or general insights. MUST BE IN HEBREW.", ...],
     "topics": ["Array of short tags/categories. MUST BE IN HEBREW.", ...],
-    "mood": "A short description of Guy's tone or mood. MUST BE IN HEBREW."
+    "mood": "A short description of tone/mood. MUST BE IN HEBREW.",
+    "triples": [["Subject", "Relation", "Object"], ["שינה", "משפיעה על", "עבודה"]]
   }
+
+  CRITICAL RULES FOR TASKS:
+  1. INTENT CLASSIFICATION: Only create a task if you identify an ACTIVE VERB and a TIMEFRAME (e.g., "today", "tomorrow", "this week", or implied immediate action). DO NOT create tasks for purely emotional/reflective thoughts (e.g., "I feel sad").
+  2. DEDUPLICATION: Compare identified tasks with the "Current Open Tasks" list below. 
+     - If a task is already present and unchanged, ignore it.
+     - If a task is present but needs updating (e.g., more detail, new deadline), add it to "taskUpdates".
+     - If a task is fundamentally new, add it to "tasks".
+
+  KNOWLEDGE GRAPH TRIPLES:
+  Extract exactly 3-7 meaningful relationships as [Subject, Relation, Object].
+  - Focus on people (family members), work projects, persistent emotions, and causes/effects.
+  - Examples: ["טלי", "ביקשה", "להכין ארוחת ערב"], ["פרויקט X", "גורם ל", "לחץ"], ["גיא", "מרגיש", "סיפוק"].
+  - Use consistent naming for the same entities.
+
+  Current Open Tasks:
+  ${currentOpenTasks.length > 0 ? currentOpenTasks.map(t => `- ${t}`).join('\n') : 'None'}
   
-  CRITICAL: ALL text values in the JSON MUST be written in Hebrew. Use a personal and helpful tone when addressing Guy indirectly.
+  CRITICAL: ALL text values MUST be in Hebrew.
   
   הקשר קבוע לגבי בני משפחה:
   ${FIXED_CONTEXT}
@@ -127,7 +148,7 @@ export async function processAudioSession(audioBlob: Blob, apiKey: string): Prom
     }
 }
 
-export async function processTextSession(textData: string, apiKey: string): Promise<ProcessedSession> {
+export async function processTextSession(textData: string, apiKey: string, currentOpenTasks: string[] = []): Promise<ProcessedSession> {
     const genAI = getGenAI(apiKey);
     const model = genAI.getGenerativeModel({
         model: activeModelName
@@ -138,16 +159,34 @@ export async function processTextSession(textData: string, apiKey: string): Prom
   You are assisting "גיא" (Guy).
   I am providing you with a raw text entry from Guy's personal diary.
   
-  Please analyze the text and provide exactly the following in clear, valid JSON format (do not include markdown code block syntax around the JSON):
+  Please analyze the text and provide exactly the following in clear, valid JSON format:
   {
-    "transcript": "The full exact text. If there are multiple speakers, label them. MUST BE IN HEBREW.",
-    "tasks": ["Array of practical tasks or actionable items mentioned in the text. MUST BE IN HEBREW.", ...],
-    "insights": ["Array of psychological or general insights derived from the entry for Guy. MUST BE IN HEBREW.", ...],
+    "transcript": "The full exact text. MUST BE IN HEBREW.",
+    "tasks": ["Array of NEW practical tasks or actionable items. MUST BE IN HEBREW.", ...],
+    "taskUpdates": [{"originalText": "existing task text", "updatedText": "new version"}],
+    "insights": ["Array of psychological or general insights. MUST BE IN HEBREW.", ...],
     "topics": ["Array of short tags/categories. MUST BE IN HEBREW.", ...],
-    "mood": "A short description of Guy's tone or mood. MUST BE IN HEBREW."
+    "mood": "A short description of tone/mood. MUST BE IN HEBREW.",
+    "triples": [["Subject", "Relation", "Object"], ["שינה", "משפיעה על", "עבודה"]]
   }
 
-  CRITICAL: ALL text values in the JSON MUST be written in Hebrew. Addressing Guy with a supportive and personal tone.
+  CRITICAL RULES FOR TASKS:
+  1. INTENT CLASSIFICATION: Only create a task if you identify an ACTIVE VERB and a TIMEFRAME (e.g., "today", "tomorrow", "this week", or implied immediate action). DO NOT create tasks for purely emotional/reflective thoughts (e.g., "I feel sad").
+  2. DEDUPLICATION: Compare identified tasks with the "Current Open Tasks" list below. 
+     - If a task is already present and unchanged, ignore it.
+     - If a task is present but needs updating (e.g., more detail, new deadline), add it to "taskUpdates".
+     - If a task is fundamentally new, add it to "tasks".
+
+  KNOWLEDGE GRAPH TRIPLES:
+  Extract exactly 3-7 meaningful relationships as [Subject, Relation, Object].
+  - Focus on people (family members), work projects, persistent emotions, and causes/effects.
+  - Examples: ["טלי", "ביקשה", "להכין ארוחת ערב"], ["פרויקט X", "גורם ל", "לחץ"], ["גיא", "מרגיש", "סיפוק"].
+  - Use consistent naming for the same entities.
+
+  Current Open Tasks:
+  ${currentOpenTasks.length > 0 ? currentOpenTasks.map(t => `- ${t}`).join('\n') : 'None'}
+
+  CRITICAL: ALL text values MUST be in Hebrew. Supporting and personal tone.
 
   Here is the text:
   ${textData}
@@ -258,10 +297,10 @@ export async function generateWeeklyBriefing(allEntries: { transcript: string; t
     const now = new Date();
     const currentDateTime = now.toLocaleString('he-IL', { dateStyle: 'full', timeStyle: 'short' });
 
-    // Filter entries from the last 7 days
-    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    // Filter entries from the current week (Sunday-Saturday)
+    const weekStart = getStartOfCurrentWeek();
     const recentTranscripts = allEntries
-        .filter(e => e.timestamp >= sevenDaysAgo)
+        .filter(e => e.timestamp >= weekStart)
         .map((e) => `[Entry Date: ${new Date(e.timestamp).toLocaleString('he-IL', { dateStyle: 'medium', timeStyle: 'short' })}]: ${e.transcript}`)
         .join('\n\n');
 
@@ -275,11 +314,13 @@ export async function generateWeeklyBriefing(allEntries: { transcript: string; t
   I am providing you with all of Guy's diary entries from the past week.
   Please provide a deep, high-level "Weekly Insight" (תובנה שבועית) that summarizes the main themes, emotional patterns, and progress Guy has made.
   
+  *CRITICAL SHADOW WORK REQUIREMENT*: Look for contradictions. What is Guy avoiding? What excuses is he making? Point out any cognitive dissonance or "stories" he tells himself to avoid pain or effort. Be direct but constructive (Devil's Advocate approach).
+
   CRITICAL: 
   - Address Guy personally by his name "גיא".
   - Provide a concise yet deep analysis.
   - MUST BE IN FLUENT HEBREW.
-  - Use a warm, professional, and encouraging tone.
+  - Use a warm, professional, and encouraging tone, but don't hold back on the Shadow Work critique.
 
   Recent material:
   ${recentTranscripts}
@@ -303,9 +344,9 @@ export async function generateCategoricalInsights(allEntries: { transcript: stri
     const genAI = getGenAI(apiKey);
     const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
 
-    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const weekStart = getStartOfCurrentWeek();
     const recentTranscripts = allEntries
-        .filter(e => e.timestamp >= sevenDaysAgo)
+        .filter(e => e.timestamp >= weekStart)
         .map((e) => `[Entry Date: ${new Date(e.timestamp).toLocaleString('he-IL', { dateStyle: 'medium', timeStyle: 'short' })}]: ${e.transcript}`)
         .join('\n\n');
 
@@ -401,41 +442,42 @@ export async function generateLifeThemesAnalysis(allEntries: { transcript: strin
     }
 }
 
-export async function generateShadowWorkInsight(allEntries: { transcript: string; timestamp: number }[], apiKey: string): Promise<string> {
+export async function analyzeExecutionGap(allEntries: { transcript: string; tasks?: any[]; timestamp: number }[], apiKey: string): Promise<string> {
     const genAI = getGenAI(apiKey);
     const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
 
-    const recentTranscripts = allEntries
-        .filter(e => e.timestamp >= (Date.now() - 7 * 24 * 60 * 60 * 1000))
-        .map(e => e.transcript)
+    // Focus on recent actions vs intentions (last 30 days roughly)
+    const recentEntries = [...allEntries].sort((a, b) => b.timestamp - a.timestamp).slice(0, 30);
+    if (recentEntries.length === 0) return "אין עדיין נתונים לבדיקת פערי ביצוע.";
+
+    const transcriptsAndTasks = recentEntries
+        .map(e => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]\nמחשבות בדיווח: ${e.transcript}\nמשימות שהוגדרו: ${(e.tasks || []).map(t => typeof t === 'string' ? t : t.text).join(', ')}`)
         .join('\n\n');
 
-    if (!recentTranscripts) return "אין מספיק חומר שבועי לניתוח Shadow Work.";
-
     const prompt = `
-  אתה מאמן המתמחה ב-"Shadow Work" (עבודת צל). המטרה שלך היא לזהות את מה שגיא *לא* אומר, את מה שהוא מדחיק, או את הסתירות הפנימיות בדבריו מהשבוע האחרון.
-  חפש רגשות מושתקים, פחדים שלא נאמרו במפורש, או מקומות שבהם הוא "מספר לעצמו סיפור" כדי להימנע מכאב.
-
-  דרישות:
-  - פנה לגיא באופן אישי.
-  - היה עדין אך נוקב. המטרה היא לעזור לו לצמוח דרך מודעות ל"צל".
-  - כתוב בעברית בלבד.
+  אתה מומחה לפסיכולוגיה התנהגותית. המשימה שלך היא לבדוק את "פער הביצוע" (Expectation vs. Reality Mapping) של גיא - הפער בין התוכניות המשימות והכוונות שהוא מצהיר עליהן ביומן, לבין מה שהוא עושה בפועל בדיווחים ובמחשבות העוקבות.
+  זהה "דחיינות כרונית" או אזורים בהם יש הימנעות רגשית מתמדת למרות כוונות טובות.
   
-  החומר לניתוח:
-  ${recentTranscripts}
+  דרישות:
+  - פנה לגיא אישית בשמו "גיא".
+  - הבא דוגמה קונקרטית מתוך הנתונים שלו (משימה או כוונה שנמנעה מספר פעמים ואת התירוצים שניתנו).
+  - היה ביקורתי (פרקליט השטן) אבל תן הצעה טיפולית.
+  - כתוב בעברית בלבד. 2-3 פסקאות קצרות.
 
-  הקשר קבוע לגבי בני משפחה:
+  נתונים לניתוח (הצהרות מול דיווח על מה שקרה באמת בימים העוקבים):
+  ${transcriptsAndTasks}
+
+  הקשר:
   ${FIXED_CONTEXT}
   `;
-
 
     try {
         const result = await model.generateContent(prompt);
         const response = await result.response;
-        return response.text() || "לא הצלחתי לייצר תובנת Shadow Work.";
+        return response.text() || "אין כרגע פערי ביצוע בולטים.";
     } catch (error) {
-        console.error("Error generating shadow work insight:", error);
-        throw error;
+        console.error("Error analyzing execution gap:", error);
+        return "שגיאה בניתוח פער הביצוע.";
     }
 }
 
@@ -492,10 +534,11 @@ export async function generateOperatingManual(allEntries: { transcript: string; 
     const prompt = `
   אתה מומחה לניתוח דפוסי התנהגות ופסיכולוגיה קוגניטיבית. המטרה שלך היא לכתוב את "ספר ההפעלה" (Personal Operating Manual) של גיא.
   זהו מסמך פרקטי שמרכז את התובנות העמוקות ביותר על איך גיא "עובד" הכי טוב, מה מניע אותו, ומה עוצר אותו.
+  עליך לפעול כ"פרקליט השטן" מול דפוסים מתחמקים או סתירות פנימיות. זהה איפה גיא משקר לעצמו לאורך זמן ומה הסתירות הקבועות בהתנהגותו.
 
   המשימה שלך: נתח את כל המחשבות והשיחות של גיא וחלץ דפוסים חוזרים בנקודות קצרות וברורות בנושאים הבאים:
   1. תנאים להצלחה ומוטיבציה (מה עוזר לו להיות במיטבו).
-  2. טריגרים רגשיים וחסמים (מה מוציא אותו מאיזון).
+  2. טריגרים רגשיים וחסמים (מה מוציא אותו מאיזון - דגש על פערים בין הצהרות למציאות).
   3. סביבת עבודה ותקשורת (איך כדאי לו לגשת למשימות או לאנשים בהתבסס על הצלחות העבר).
   4. המלצות פרקטיות למניעה (מה הוא יכול לעשות כשמתחיל דפוס שלילי).
 
@@ -539,9 +582,9 @@ export async function generateKorczakAnalysis(allEntries: { transcript: string; 
     const genAI = getGenAI(apiKey);
     const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
 
-    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const weekStart = getStartOfCurrentWeek();
     const recentTranscripts = allEntries
-        .filter(e => e.timestamp >= sevenDaysAgo)
+        .filter(e => e.timestamp >= weekStart)
         .map(e => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`)
         .join('\n\n');
 
@@ -582,3 +625,70 @@ export async function generateKorczakAnalysis(allEntries: { transcript: string; 
     }
 }
 
+
+export async function generateMajorInsights(
+    allEntries: { transcript: string; timestamp: number }[], 
+    apiKey: string,
+    currentInsights: string[] = []
+): Promise<string[]> {
+    const genAI = getGenAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
+
+    const weekStart = getStartOfCurrentWeek();
+    
+    // Sort and limit
+    const sortedEntries = [...allEntries].sort((a, b) => b.timestamp - a.timestamp);
+    const weeklyEntries = sortedEntries.filter(e => e.timestamp >= weekStart);
+    const globalEntriesSubset = sortedEntries.slice(0, 50);
+
+    const weeklyTranscripts = weeklyEntries
+        .map((e) => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`)
+        .join('\n\n');
+
+    const globalTranscripts = globalEntriesSubset
+        .map((e) => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`)
+        .join('\n\n');
+
+    const prompt = `
+  אתה מומחה לניתוח פסיכולוגי ואימון אישי עבור "גיא" (Guy).
+  המשימה שלך היא לייצר בדיוק 4 תובנות עיקריות, קצרות ומדויקות (עד 3 שורות לכל אחת).
+  
+  התובנות הנדרשות:
+  1. תובנה גלובלית: ניתוח של כל חומר הגלם לאורך כל ההיסטוריה - זהה דפוס עומק או שינוי ארוך טווח.
+  2. תובנה שבועית: סיכום המגמות והאירועים מהשבוע האחרון בלבד.
+  3. תובנה משמעותית נבחרת: תובנה אחת שהמערכת בוחרת כחשובה ביותר כרגע.
+  4. תובנת תת מודע (Subconscious Insight): חשיפת קורלציות חבויות. האם יש נושא שורש רגשי שמנהל אותו מתחת לפני השטח בהתבסס על ההיסטוריה? (למשל: סטרס כלכלי שמתבטא בהפרעות שינה שימים אחרי מתבטא בכעס על נוה).
+
+  דרישות חובה:
+  - פנה לגיא אישית בשמו.
+  - כתוב בעברית בלבד.
+  - כל תובנה חייבת להיות קצרה (3 שורות מקסימום).
+  - אל תכתוב כותרות כמו "תובנה גלובלית:", פשוט את הטקסט עצמו.
+  - החזר את התשובה בפורמט JSON של מערך מחרוזות אורך 4 בדיוק: ["טקסט 1", "טקסט 2", "טקסט 3", "טקסט 4"]
+
+  חומר שבועי:
+  ${weeklyTranscripts || "אין מספיק נתונים מהשבוע."}
+
+  חומר גלובלי (נציגותי):
+  ${globalTranscripts}
+
+  תובנות קיימות (למטרת יציבות):
+  ${currentInsights.length > 0 ? currentInsights.join('\n') : "אין תובנות קודמות."}
+
+  הנחיות יציבות (stability):
+  - אם התובנה החדשה שאתה מייצר אינה "חזקה", עמוקה או רלוונטית משמעותית יותר מהתובנה הקיימת באותו המיקום, העדף להחזיר את הטקסט הקיים כמעט כלשונו או עם שינויים מזעריים.
+  - עדכן תובנה רק אם יש "בשר" חדש או תובנה עמוקה יותר שנובעת מהחומר החדש.
+
+  הקשר משפחתי:
+  ${FIXED_CONTEXT}
+  `;
+
+    try {
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        return parseAIResponse(response.text());
+    } catch (error) {
+        console.error("Error generating major insights:", error);
+        throw error;
+    }
+}

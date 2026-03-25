@@ -28,4 +28,31 @@
     display: flex;
     flex-direction: column;
   }
+
+  /* Custom Scrollbar Utility */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(10, 59, 102, 0.7);
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(10, 59, 102, 0.9);
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  /* Support for Firefox */
+  .custom-scrollbar {
+    scrollbar-width: auto;
+    scrollbar-color: rgba(10, 59, 102, 0.4) rgba(255, 255, 255, 0.05);
+  }
 }

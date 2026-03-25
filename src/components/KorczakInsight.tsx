@@ -2,9 +2,8 @@ import React, { useState } from 'react';
 import { ChevronDown, ChevronUp, History, Loader2, Sparkles } from 'lucide-react';
 import { useAppStore } from '../store';
 import { generateKorczakAnalysis } from '../services/ai';
+import { cn } from '../App';
 import SpeechButton from './SpeechButton';
-
-// Shared SpeechButton imported above
 
 const KORCZAK_TEXT = `
 קח לך זמן לעבודה – זה המחיר להצלחתך
@@ -42,13 +41,14 @@ export default function KorczakInsight() {
     if (!korczakAnalysis?.insight && entries.length === 0) return null;
 
     return (
-        <div className="bg-gradient-to-br from-[#4A90E2]/20 to-[#0D3B66]/40 backdrop-blur-xl border border-white/10 rounded-[2rem] overflow-hidden shadow-xl transition-all">
+        <div className="w-full transition-all">
             <div 
                 role="button"
                 tabIndex={0}
                 onClick={() => setIsExpanded(!isExpanded)}
                 onKeyDown={(e) => e.key === 'Enter' && setIsExpanded(!isExpanded)}
-                className="w-full p-5 flex items-center justify-between hover:bg-white/5 transition-colors group cursor-pointer"
+                className="w-full min-h-[70px] p-5 flex items-center justify-between hover:bg-white/5 transition-colors group cursor-pointer relative z-10"
+                dir="rtl"
             >
                 <div className="flex items-center gap-3">
                     <div className="w-10 h-10 bg-[#4A90E2] rounded-2xl flex items-center justify-center text-white group-hover:scale-110 transition-transform shadow-lg">
@@ -63,7 +63,11 @@ export default function KorczakInsight() {
                     <button 
                         onClick={handleRefresh}
                         disabled={isRefreshing || !apiKey}
-                        className="w-8 h-8 rounded-full flex items-center justify-center bg-white/5 hover:bg-white/10 text-white/30 hover:text-white transition-all"
+                        className={cn(
+                            "w-8 h-8 rounded-full flex items-center justify-center bg-white/5 hover:bg-white/10 text-white/30 hover:text-white transition-all",
+                            (isRefreshing || !apiKey) && "opacity-50 cursor-not-allowed"
+                        )}
+                        title="רענן ניתוח"
                     >
                         {isRefreshing ? <Loader2 size={16} className="animate-spin" /> : <History size={16} />}
                     </button>
@@ -74,8 +78,8 @@ export default function KorczakInsight() {
             </div>
 
             {isExpanded && (
-                <div className="p-5 pt-0 animate-in fade-in slide-in-from-top-2">
-                    <div className="max-h-[400px] overflow-y-auto custom-scrollbar space-y-4 pr-1">
+                <div className="p-5 pt-0 animate-in fade-in slide-in-from-top-2" dir="rtl">
+                    <div className="h-[320px] overflow-y-auto custom-scrollbar space-y-4 pr-1">
                         {/* The Original Text Section */}
                         <div className="bg-white/5 rounded-2xl p-4 border border-white/10 italic">
                             <div className="text-[11px] text-white/70 leading-relaxed text-center space-y-1">
