@@ -30,7 +30,7 @@ export default function DashboardTab() {
     topicsMap[normalized] = (topicsMap[normalized] || 0) + 1; 
   }));
   const topTopics = Object.entries(topicsMap).sort((a, b) => b[1] - a[1]).slice(0, 8); // Take top 8 for bar chart
-  const maxTopicCount = topTopics.length > 0 ? topTopics[0][1] : 1;
+
 
 
   return (
@@ -48,47 +48,94 @@ export default function DashboardTab() {
       </div>
 
 
-      {/* 1. Top Topics Section - Vertical Bar Chart */}
-      <section className="shrink-0 bg-white/10 backdrop-blur-xl border border-white/10 rounded-[2.5rem] p-6 shadow-xl">
+      {/* 1. Top Topics Section - Donut Pie Chart */}
+      <section className="shrink-0 bg-white/10 backdrop-blur-xl border border-white/10 rounded-[2.5rem] p-6 shadow-xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-32 h-32 bg-[#FFD54F]/5 blur-3xl -mr-16 -mt-16 pointer-events-none" />
+        
         <div className="flex justify-between items-center mb-6">
           <h3 className="text-sm font-bold text-white/90 flex items-center gap-2">
             <Star size={16} className="text-[#FFD54F]" />
-            נושאים מובילים
+            פילוג נושאים מובילים
           </h3>
-          <span className="text-[10px] text-white/40 uppercase tracking-widest leading-none">תדירות</span>
+          <span className="text-[10px] text-white/40 uppercase tracking-widest leading-none">אחוזים</span>
         </div>
 
-        <div className="relative h-40 w-full flex items-end justify-between gap-2 px-2 mt-2">
+        <div className="flex flex-col md:flex-row items-center gap-8 px-2">
           {topTopics.length === 0 ? (
-             <div className="w-full h-full flex items-center justify-center text-white/30 text-xs italic">אין נושאים מתועדים בחודש האחרון...</div>
-          ) : (
-            topTopics.map(([topic, count]) => {
-              const heightPercent = `${(count / maxTopicCount) * 100}%`;
-              return (
-                <div key={topic} className="flex flex-col items-center justify-end h-full w-full group relative">
-                  {/* Tooltip on hover/active */}
-                  <div className="absolute -top-8 bg-black/60 backdrop-blur-md px-2 py-1 rounded-lg text-[10px] text-white opacity-0 group-hover:opacity-100 transition-opacity z-10 whitespace-nowrap pointer-events-none">
-                    {count} תיעודים
+             <div className="w-full h-40 flex items-center justify-center text-white/30 text-xs italic">אין נושאים מתועדים בחודש האחרון...</div>
+          ) : (() => {
+            const totalCount = topTopics.reduce((sum, [, count]) => sum + count, 0);
+            const colors = [
+              '#FFD54F', '#4FC3F7', '#81C784', '#BA68C8', 
+              '#FF8A65', '#4DB6AC', '#7986CB', '#D4E157'
+            ];
+            
+            let cumulativePercent = 0;
+            const slices = topTopics.map(([topic, count], i) => {
+              const percent = (count / totalCount) * 100;
+              const startPercent = cumulativePercent;
+              cumulativePercent += percent;
+              return { topic, count, percent, color: colors[i % colors.length], startPercent };
+            });
+
+            return (
+              <>
+                {/* SVG Donut Chart */}
+                <div className="relative w-40 h-40 flex-shrink-0 animate-in zoom-in duration-700">
+                  <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90 transform origin-center drop-shadow-lg">
+                    {slices.map((slice, i) => {
+                      const radius = 40;
+                      const circumference = 2 * Math.PI * radius;
+                      const offset = circumference - (slice.percent / 100) * circumference;
+                      const rotation = (slice.startPercent / 100) * 360;
+                      
+                      return (
+                        <circle
+                          key={i}
+                          cx="50"
+                          cy="50"
+                          r={radius}
+                          fill="transparent"
+                          stroke={slice.color}
+                          strokeWidth="12"
+                          strokeDasharray={circumference}
+                          strokeDashoffset={offset}
+                          transform={`rotate(${rotation} 50 50)`}
+                          strokeLinecap={slice.percent > 2 ? "round" : "butt"}
+                          className="transition-all duration-1000 ease-out hover:opacity-80 cursor-pointer"
+                        />
+                      );
+                    })}
+                  </svg>
+                  {/* Center Content */}
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                    <span className="text-[10px] text-white/40 uppercase tracking-tight">סה"כ</span>
+                    <span className="text-xl font-bold text-white leading-none">{totalCount}</span>
                   </div>
-                  
-                  {/* The Bar */}
-                  <div className="w-full max-w-[40px] bg-white/5 rounded-t-xl relative overflow-hidden group-hover:bg-white/10 transition-colors duration-300" style={{ height: '100%' }}>
-                    <div 
-                      className="absolute bottom-0 w-full bg-gradient-to-t from-[#FFD54F]/80 to-[#FFD54F] rounded-t-xl transition-all duration-1000 ease-out"
-                      style={{ height: heightPercent }}
-                    >
-                      <div className="absolute top-0 w-full h-1 bg-white/40 rounded-t-xl"></div>
-                    </div>
-                  </div>
-                  
-                  {/* Topic Label */}
-                  <span className="text-[9px] font-bold text-white/70 mt-2 text-center w-full truncate px-1 group-hover:text-white transition-colors" title={topic}>
-                    {topic}
-                  </span>
                 </div>
-              );
-            })
-          )}
+
+                {/* Legend List */}
+                <div className="flex-1 w-full grid grid-cols-2 gap-x-4 gap-y-3 mt-4 md:mt-0">
+                  {slices.map((slice, i) => (
+                    <div key={i} className="flex items-center gap-2 group transition-all">
+                      <div 
+                        className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" 
+                        style={{ backgroundColor: slice.color }} 
+                      />
+                      <div className="flex flex-col min-w-0">
+                        <span className="text-[10px] font-bold text-white/90 truncate group-hover:text-white" title={slice.topic}>
+                          {slice.topic}
+                        </span>
+                        <span className="text-[9px] text-white/40 font-mono">
+                          {Math.round(slice.percent)}%
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            );
+          })()}
         </div>
       </section>
 
