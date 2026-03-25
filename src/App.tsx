@@ -601,6 +601,11 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
           "relative z-20 flex items-center px-6 pb-4 bg-white/5 backdrop-blur-md border-b border-white/10 shrink-0",
           isStandalone ? "pt-[max(env(safe-area-inset-top),20px)]" : "pt-4"
         )}>
+        <img 
+          src="/logo.jpg" 
+          alt="Logo" 
+          className="w-8 h-8 rounded-full border border-white/20 ml-3 object-cover shadow-sm transition-transform active:scale-90"
+        />
         <h1 
           onDoubleClick={() => setShowDiagnostics(true)}
           className="text-xl font-bold text-white tracking-tight cursor-pointer active:scale-95 transition-transform"
