@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getStartOfCurrentWeek } from '../utils/dateUtils';
+import { useAppStore } from '../store';
 
 // Initialize the SDK with the user-provided API key
 const getGenAI = (apiKey: string) => {
@@ -47,6 +48,7 @@ export const SUPPORTED_MODELS = [
 
 let activeModelName = 'gemini-2.5-flash';
 let activeApiVersion = 'v1';
+let liteModelName = 'gemini-2.0-flash-lite';
 
 export const setActiveModel = (name: string, version: string = 'v1') => {
     activeModelName = name;
@@ -249,7 +251,21 @@ export async function queryInsights(
             ).join('\n');
             contextData += `\n`;
         }
+        // Strava activities context
+        const { stravaActivities } = useAppStore.getState();
+        if (stravaActivities && stravaActivities.length > 0) {
+            contextData += `\n[נתוני אימון מ-Strava (פעילות גופנית)]: \n`;
+            contextData += stravaActivities.slice(0, 5).map((a: any) => 
+                `- ${new Date(a.start_date).toLocaleDateString('he-IL')}: ${a.name} (${a.sport_type}), מרחק: ${(a.distance/1000).toFixed(2)} ק"מ, זמן: ${Math.floor(a.moving_time/60)} דקות${a.average_heartrate ? `, דופק ממוצע: ${a.average_heartrate}` : ''}`
+            ).join('\n');
+            contextData += `\n`;
+        }
     }
+
+    const includesAllHistory = question.includes("כל ההיסטוריה");
+    const recentEntriesForQuery = includesAllHistory
+        ? [...allEntries].sort((a, b) => a.timestamp - b.timestamp)
+        : [...allEntries].sort((a, b) => b.timestamp - a.timestamp).slice(0, 30).sort((a, b) => a.timestamp - b.timestamp);
 
     const prompt = `
   You are an expert personal assistant for "גיא" (Guy).
@@ -257,7 +273,7 @@ export async function queryInsights(
   Today is: ${currentDateTime} (Current Date and Time).
   Guy is asking you a question about his past entries or the insights you've provided.
   
-  When answering, address Guy personally by his name "גיא" occasionally. 
+  When answering, address him directly in the second person ("אתה"). 
   Be warm, insightful, and supportive.
 
   Here is Guy's question:
@@ -268,12 +284,12 @@ export async function queryInsights(
  
 
   Here are all of Guy's past transcripts with their recorded dates:
-  ${allEntries.map((e) => `[Entry Date: ${new Date(e.timestamp).toLocaleString('he-IL', { dateStyle: 'medium', timeStyle: 'short' })}]: ${e.transcript}`).join('\n\n')}
+  ${recentEntriesForQuery.map((e) => `[Entry Date: ${new Date(e.timestamp).toLocaleString('he-IL', { dateStyle: 'medium', timeStyle: 'short' })}]: ${e.transcript}`).join('\n\n')}
   
  
 
   Please provide a helpful, deep, and insightful answer to Guy's question based on the transcripts and context provided above. 
-  CRITICAL: Answer MUST be in fluent Hebrew. If the answer is not in the material, state that gently in Hebrew, addressing Guy by name.
+  CRITICAL: Answer MUST be in fluent Hebrew. If the answer is not in the material, state that gently in Hebrew, addressing the user in second person.
 
   הקשר קבוע לגבי בני משפחה:
   ${FIXED_CONTEXT}
@@ -317,7 +333,7 @@ export async function generateWeeklyBriefing(allEntries: { transcript: string; t
   *CRITICAL SHADOW WORK REQUIREMENT*: Look for contradictions. What is Guy avoiding? What excuses is he making? Point out any cognitive dissonance or "stories" he tells himself to avoid pain or effort. Be direct but constructive (Devil's Advocate approach).
 
   CRITICAL: 
-  - Address Guy personally by his name "גיא".
+  - Address the user directly in the second person ("אתה").
   - Provide a concise yet deep analysis.
   - MUST BE IN FLUENT HEBREW.
   - Use a warm, professional, and encouraging tone, but don't hold back on the Shadow Work critique.
@@ -342,7 +358,7 @@ export async function generateWeeklyBriefing(allEntries: { transcript: string; t
 
 export async function generateCategoricalInsights(allEntries: { transcript: string; timestamp: number }[], apiKey: string): Promise<{ work: string; family: string; personal: string }> {
     const genAI = getGenAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
+    const model = genAI.getGenerativeModel({ model: liteModelName }, { apiVersion: activeApiVersion as any });
 
     const weekStart = getStartOfCurrentWeek();
     const recentTranscripts = allEntries
@@ -369,11 +385,11 @@ export async function generateCategoricalInsights(allEntries: { transcript: stri
   {
     "work": "Insight about work, addressing Guy personally",
     "family": "Insight about family, addressing Guy personally",
-    "personal": "Deep psychological insight, addressing Guy personally"
+    "personal": "Deep psychological insight, addressing the user directly"
   }
 
   CRITICAL:
-  - Address Guy personally by his name "גיא".
+  - Address the user directly in the second person ("אתה").
   - MUST BE IN FLUENT HEBREW.
   - Tone should be warm and professional.
 
@@ -399,6 +415,58 @@ export async function generateCategoricalInsights(allEntries: { transcript: stri
     }
 }
 
+export async function generateAdvices(allEntries: { transcript: string; timestamp: number }[], apiKey: string): Promise<{ work: string; family: string; mental: string }> {
+    const genAI = getGenAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
+
+    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const recentTranscripts = allEntries
+        .filter(e => e.timestamp >= thirtyDaysAgo)
+        .map(e => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`)
+        .join('\n\n');
+
+    if (!recentTranscripts) {
+        return {
+            work: "אין מספיק נתונים לחודש האחרון כדי לייצר עצה בעבודה.",
+            family: "אין מספיק נתונים לחודש האחרון כדי לייצר עצה למשפחה.",
+            mental: "אין מספיק נתונים לחודש האחרון כדי לייצר עצה לרווחה הנפשית."
+        };
+    }
+
+    const prompt = `
+  אתה יועץ אישי ופסיכולוגי בכיר של "גיא".
+  תפקידך לסקור את יומנו מ-30 הימים האחרונים ולספק לו 3 עצות קונקרטיות ופעילות בתחומים הבאים:
+  1. עבודה (Work)
+  2. משפחה (Family)
+  3. רווחה נפשית (Mental Well-being)
+
+  דרישות:
+  - על כל עצה להיות **קצרה מאוד, עד 3 שורות לכל היותר**. עצה פרקטית וישירה אליו.
+  - פנה למשתמש ישירות בגוף שני ("אתה", למשל: "כדאי לך...").
+  - כתוב בעברית קולחת ומעוררת השראה.
+  - החזר תשובה בפורמט JSON בלבד (ללא טקסט נוסף):
+  {
+    "work": "עצה קצרה ואקטיבית לעבודה",
+    "family": "עצה קצרה ואקטיבית למשפחה",
+    "mental": "עצה קצרה ואקטיבית לרווחה"
+  }
+
+  הקשר קבוע לגבי המשפחה:
+  ${FIXED_CONTEXT}
+
+  היומנים מהחודש האחרון:
+  ${recentTranscripts}
+  `;
+
+    try {
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        return parseAIResponse(response.text());
+    } catch (error: any) {
+        console.error("Error generating advices:", error);
+        throw error;
+    }
+}
 
 export async function generateLifeThemesAnalysis(allEntries: { transcript: string; timestamp: number }[], apiKey: string, type: 'weekly' | 'monthly'): Promise<string> {
     const genAI = getGenAI(apiKey);
@@ -414,13 +482,22 @@ export async function generateLifeThemesAnalysis(allEntries: { transcript: strin
         .map(e => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`)
         .join('\n\n');
 
+    // Add Strava context for themes
+    const { stravaActivities } = useAppStore.getState();
+    const workoutContext = stravaActivities.slice(0, 10)
+        .map(a => `- ${new Date(a.start_date).toLocaleDateString('he-IL')}: ${a.name} (${a.sport_type})`)
+        .join('\n');
+
     const prompt = `
   אתה אנליסט דפוסים אישי ומומחה בפסיכולוגיה של "תמות חיים" (Life Themes).
   המשימה שלך: לנתח את המחשבות של גיא ${timeRangeText} ולזהות 2-3 "תמות על" - נושאים מרכזיים שחוזרים על עצמם, גם אם בדרכים שונות.
   בנוסף, השווה את התמות האלו למה שאתה מזהה כ"עבר רחוק יותר" (מתוך כלל החומר) וציין אם יש שינוי, התקדמות או נסיגה.
 
+  נתוני אימון (להקשר פיזי):
+  ${workoutContext || "אין נתוני אימון"}
+
   דרישות:
-  - פנה לגיא בשמו באופן אישי וחם.
+  - פנה למשתמש ישירות בגוף שני ("אתה").
   - כתוב בעברית קולחת ומקצועית אך נגישה.
   - התמקד ב"למה" מאחורי הדברים, לא רק ב"מה".
   
@@ -459,7 +536,7 @@ export async function analyzeExecutionGap(allEntries: { transcript: string; task
   זהה "דחיינות כרונית" או אזורים בהם יש הימנעות רגשית מתמדת למרות כוונות טובות.
   
   דרישות:
-  - פנה לגיא אישית בשמו "גיא".
+  - פנה למשתמש ישירות בגוף שני ("אתה").
   - הבא דוגמה קונקרטית מתוך הנתונים שלו (משימה או כוונה שנמנעה מספר פעמים ואת התירוצים שניתנו).
   - היה ביקורתי (פרקליט השטן) אבל תן הצעה טיפולית.
   - כתוב בעברית בלבד. 2-3 פסקאות קצרות.
@@ -483,7 +560,7 @@ export async function analyzeExecutionGap(allEntries: { transcript: string; task
 
 export async function generateEmotionalGTDInsight(allEntries: { transcript: string; timestamp: number }[], apiKey: string): Promise<string> {
     const genAI = getGenAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
+    const model = genAI.getGenerativeModel({ model: liteModelName }, { apiVersion: activeApiVersion as any });
 
     const recentTranscripts = allEntries
         .slice(0, 10) 
@@ -496,7 +573,7 @@ export async function generateEmotionalGTDInsight(allEntries: { transcript: stri
 
   דרישות חובה:
   - השתמש בבולטים (bullets) ברורים וקצרים.
-  - פנה לגיא אישית בשמו.
+  - פנה למשתמש ישירות בגוף שני ("אתה").
   - כתוב בעברית בלבד.
   - מבנה התשובה: פתיחה קצרה, ואז 2-3 בולטים של תובנות/פעולות מוצעות.
   
@@ -522,8 +599,12 @@ export async function generateOperatingManual(allEntries: { transcript: string; 
     const genAI = getGenAI(apiKey);
     const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
 
-    // Use a larger set of entries for long-term pattern analysis (up to 50)
-    const entriesToAnalyze = [...allEntries].sort((a, b) => b.timestamp - a.timestamp).slice(0, 50);
+    const isFirstOfMonth = new Date().getDate() === 1;
+    
+    // Only send full history on the 1st of the month, otherwise limit to last 30 entries
+    const entriesToAnalyze = isFirstOfMonth
+        ? [...allEntries].sort((a, b) => b.timestamp - a.timestamp)
+        : [...allEntries].sort((a, b) => b.timestamp - a.timestamp).slice(0, 30);
 
     if (entriesToAnalyze.length === 0) return "עדיין אין מספיק נתונים כדי לייצר את ספר ההפעלה שלך. המשך לשתף במחשבות!";
 
@@ -544,7 +625,7 @@ export async function generateOperatingManual(allEntries: { transcript: string; 
 
   דרישות חובה:
   - כתוב בבוליטים (bullets) קצרים, חדים וברורים.
-  - פנה לגיא אישית בשמו.
+  - פנה למשתמש ישירות בגוף שני ("אתה").
   - כתוב בעברית בלבד.
   - התמקד במידע פרקטי ויישומי לטווח ארוך.
   
@@ -604,7 +685,7 @@ export async function generateKorczakAnalysis(allEntries: { transcript: string; 
   5. הצע לו 2-3 פעולות פרקטיות וקטנות לשבוע הבא כדי לאזן את חלוקת הזמן שלו לפי המודל.
 
   דרישות:
-  - פנה לגיא אישית בשמו.
+  - פנה למשתמש ישירות בגוף שני ("אתה").
   - כתוב בעברית קולחת ומעוררת השראה.
   - השתמש בבולטים ברורים.
   
@@ -639,7 +720,7 @@ export async function generateMajorInsights(
     // Sort and limit
     const sortedEntries = [...allEntries].sort((a, b) => b.timestamp - a.timestamp);
     const weeklyEntries = sortedEntries.filter(e => e.timestamp >= weekStart);
-    const globalEntriesSubset = sortedEntries.slice(0, 50);
+    const globalEntriesSubset = sortedEntries.slice(0, 30);
 
     const weeklyTranscripts = weeklyEntries
         .map((e) => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`)
@@ -660,7 +741,7 @@ export async function generateMajorInsights(
   4. תובנת תת מודע (Subconscious Insight): חשיפת קורלציות חבויות. האם יש נושא שורש רגשי שמנהל אותו מתחת לפני השטח בהתבסס על ההיסטוריה? (למשל: סטרס כלכלי שמתבטא בהפרעות שינה שימים אחרי מתבטא בכעס על נוה).
 
   דרישות חובה:
-  - פנה לגיא אישית בשמו.
+  - פנה למשתמש ישירות בגוף שני ("אתה").
   - כתוב בעברית בלבד.
   - כל תובנה חייבת להיות קצרה (3 שורות מקסימום).
   - אל תכתוב כותרות כמו "תובנה גלובלית:", פשוט את הטקסט עצמו.

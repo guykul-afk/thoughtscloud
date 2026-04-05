@@ -40,6 +40,18 @@ export interface KnowledgeGraph {
     edges: GraphEdge[];
 }
 
+export interface AdviceItem {
+    timestamp: number;
+    work: string;
+    family: string;
+    mental: string;
+}
+
+export interface AdvicesState {
+    history: AdviceItem[];
+    lastEntryCount: number;
+}
+
 interface AppState {
     apiKey: string;
     entries: DiaryEntry[];
@@ -74,6 +86,7 @@ interface AppState {
         insight?: string;
         lastDate?: string;
     } | null;
+    advices: AdvicesState | null;
     isGdriveConnected: boolean;
     setApiKey: (key: string) => void;
     addEntry: (entry: ProcessedSession) => void;
@@ -94,7 +107,31 @@ interface AppState {
     addTriples: (triples: Triple[], timestamp: number) => void;
     setKnowledgeGraph: (graph: KnowledgeGraph) => void;
     setGraphInsights: (insights: AppState['graphInsights']) => void;
+    setAdvices: (advices: AdvicesState) => void;
     setGdriveConnected: (connected: boolean) => void;
+    // Strava Integration
+    stravaAuth: {
+        accessToken: string | null;
+        refreshToken: string | null;
+        expiresAt: number | null;
+    } | null;
+    stravaActivities: StravaActivity[];
+    lastStravaSync: string | null; // YYYY-MM-DD
+    setStravaAuth: (auth: AppState['stravaAuth']) => void;
+    setStravaActivities: (activities: StravaActivity[]) => void;
+    setLastStravaSync: (date: string) => void;
+}
+
+export interface StravaActivity {
+    id: number;
+    name: string;
+    sport_type: string;
+    start_date: string;
+    distance: number;
+    moving_time: number;
+    total_elevation_gain: number;
+    average_heartrate?: number;
+    suffer_score?: number;
 }
 
 
@@ -114,9 +151,11 @@ export const useAppStore = create<AppState>()(
             majorInsights: [],
             knowledgeGraph: { nodes: [], edges: [] },
             graphInsights: null,
+            advices: null,
             isGdriveConnected: false,
             setApiKey: (apiKey) => set({ apiKey }),
             setGdriveConnected: (isGdriveConnected) => set({ isGdriveConnected }),
+            setAdvices: (advices) => set({ advices }),
             addEntry: (entry) => set((state) => {
                 let updatedEntries = [...state.entries];
                 
@@ -259,6 +298,12 @@ export const useAppStore = create<AppState>()(
             }),
             setKnowledgeGraph: (knowledgeGraph) => set({ knowledgeGraph }),
             setGraphInsights: (graphInsights) => set({ graphInsights }),
+            setStravaAuth: (stravaAuth) => set({ stravaAuth }),
+            setStravaActivities: (stravaActivities) => set({ stravaActivities }),
+            setLastStravaSync: (lastStravaSync) => set({ lastStravaSync }),
+            stravaAuth: null,
+            stravaActivities: [],
+            lastStravaSync: null,
         }),
 
         {

@@ -1,16 +1,17 @@
 import { useState } from 'react';
 import { useAppStore } from '../store';
 import { cn } from '../App';
-import { Brain, Star, Notebook, Activity, ChevronDown, ChevronUp } from 'lucide-react';
+import { Brain, Star, Notebook, Activity, ChevronDown, ChevronUp, Lightbulb, Briefcase, Home, Heart } from 'lucide-react';
 import KorczakInsight from './KorczakInsight';
 import SpeechButton from './SpeechButton';
 
 
 
 export default function DashboardTab() {
-  const { entries, operatingManual, shadowWork } = useAppStore();
+  const { entries, operatingManual, shadowWork, advices } = useAppStore();
   const [isManualExpanded, setIsManualExpanded] = useState(false);
   const [isGapExpanded, setIsGapExpanded] = useState(false);
+  const [isAdvicesExpanded, setIsAdvicesExpanded] = useState(false);
 
   // 1. Filter entries to last 30 days
   const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
@@ -255,6 +256,76 @@ export default function DashboardTab() {
           </div>
         )}
       </section>
+
+      {/* 5. AI Advices Section */}
+      <section className="shrink-0 bg-white/10 backdrop-blur-xl border border-white/10 rounded-[2.5rem] overflow-hidden shadow-xl transition-all relative group">
+        <button 
+          onClick={() => setIsAdvicesExpanded(!isAdvicesExpanded)}
+          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors relative z-10 text-right"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-blue-400/20 flex items-center justify-center text-blue-400">
+              <Lightbulb size={22} />
+            </div>
+            <div className="text-right">
+              <span className="block font-bold text-white text-sm">העצות שלי מה-AI</span>
+              <span className="block text-[10px] text-white/20 uppercase mt-0.5 tracking-widest">עבודה, משפחה, רווחה נפשית</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 text-white/30">
+            {isAdvicesExpanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+          </div>
+        </button>
+
+        {isAdvicesExpanded && (
+          <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2">
+            {(!advices?.history || advices.history.length === 0) ? (
+              <div className="py-6 flex flex-col items-center text-center space-y-4">
+                <Lightbulb size={32} className="text-white/10 animate-pulse" />
+                <p className="text-xs text-white/40 italic">ה-AI אוסף נתונים ומכין עצות רלוונטיות עבורך...</p>
+              </div>
+            ) : (
+              <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                {advices.history.map((adv, idx) => (
+                  <div key={idx} className="bg-white/5 rounded-2xl p-4 border border-white/10 space-y-4">
+                    <div className="flex items-center justify-between border-b border-white/10 pb-2 mb-2">
+                      <span className="text-[10px] text-white/40 font-mono">
+                        {new Date(adv.timestamp).toLocaleDateString('he-IL')}
+                      </span>
+                      {idx === 0 && <span className="text-[9px] bg-[#FFD54F]/20 text-[#FFD54F] px-2 py-0.5 rounded-full font-bold tracking-widest">העדכני ביותר</span>}
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                       <Briefcase size={16} className="text-[#4FC3F7] mt-0.5 shrink-0" />
+                       <div>
+                          <span className="block text-xs font-bold text-[#4FC3F7] mb-1">עבודה</span>
+                          <p className="text-sm text-white/80 leading-relaxed">{adv.work}</p>
+                       </div>
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                       <Home size={16} className="text-[#81C784] mt-0.5 shrink-0" />
+                       <div>
+                          <span className="block text-xs font-bold text-[#81C784] mb-1">משפחה</span>
+                          <p className="text-sm text-white/80 leading-relaxed">{adv.family}</p>
+                       </div>
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                       <Heart size={16} className="text-[#FF8A65] mt-0.5 shrink-0" />
+                       <div>
+                          <span className="block text-xs font-bold text-[#FF8A65] mb-1">רווחה נפשית</span>
+                          <p className="text-sm text-white/80 leading-relaxed">{adv.mental}</p>
+                       </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
     </div>
   );
 }

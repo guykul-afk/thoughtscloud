@@ -31,6 +31,7 @@ import {
   generateOperatingManual,
   generateKorczakAnalysis,
   generateMajorInsights,
+  generateAdvices,
   processAudioSession,
   processTextSession,
   SUPPORTED_MODELS,
@@ -38,6 +39,7 @@ import {
 } from './services/ai';
 import { GeminiLiveService, type LiveChatStatus } from './services/live-ai';
 import { loadGapi, loadGis, handleAuthClick, handleSignoutClick, setAuthChangeCallback, uploadStateToDrive, downloadStateFromDrive, forceCheckAuth, dumpStorage } from './services/drive';
+import { getStravaAuthUrl, exchangeCodeForToken, fetchStravaActivities } from './services/strava';
 import VoicePulse from './components/VoicePulse';
 import DashboardTab from './components/DashboardTab';
 import SpeechButton from './components/SpeechButton';
@@ -202,6 +204,9 @@ export default function App() {
         if (state.korczakAnalysis) {
           useAppStore.getState().setKorczakAnalysis(state.korczakAnalysis);
         }
+        if (state.advices) {
+          useAppStore.getState().setAdvices(state.advices);
+        }
       }
     } catch (e) {
       console.error("Failed to sync from drive", e);
@@ -209,6 +214,60 @@ export default function App() {
       setIsSyncing(false);
     }
   };
+
+  // Handle Strava OAuth Callback
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const code = urlParams.get('code');
+    const scope = urlParams.get('scope');
+
+    if (code && scope?.includes('activity:read')) {
+      console.log("TRACE: Detected Strava OAuth code. Exchanging...");
+      setIsSyncing(true);
+      exchangeCodeForToken(code)
+        .then(() => {
+          console.log("TRACE: Strava Auth Successful");
+          // Clear query params without reload
+          window.history.replaceState({}, document.title, window.location.pathname);
+          // Initial fetch (last 48h)
+          return fetchStravaActivities(Date.now() - 48 * 3600000);
+        })
+        .catch(err => {
+          console.error("Strava Auth Error:", err);
+          alert("שגיאה בחיבור ל-Strava: " + err.message);
+        })
+        .finally(() => setIsSyncing(false));
+    }
+  }, []);
+
+  // Daily Strava Sync at 09:00
+  useEffect(() => {
+    const checkAndSyncStrava = async () => {
+      const { stravaAuth, lastStravaSync } = useAppStore.getState();
+      if (!stravaAuth?.accessToken) return;
+
+      const now = new Date();
+      const currentHour = now.getHours();
+      const todayStr = now.toLocaleDateString('en-CA');
+
+      if (currentHour >= 9 && lastStravaSync !== todayStr) {
+        console.log("TRACE: Triggering daily Strava sync (09:00 threshold reached)");
+        try {
+          // Fetch activities since last sync or last 48h
+          await fetchStravaActivities(Date.now() - 48 * 3600000);
+        } catch (e) {
+          console.error("Daily Strava sync failed:", e);
+        }
+      }
+    };
+
+    // Check every hour
+    const interval = setInterval(checkAndSyncStrava, 3600000);
+    // Also check immediately on load
+    checkAndSyncStrava();
+
+    return () => clearInterval(interval);
+  }, [isAuthenticated]);
 
   // Sync to drive whenever entries or chatMessages change (with simple debounce)
   useEffect(() => {
@@ -229,7 +288,8 @@ export default function App() {
         lifeThemes: currentState.lifeThemes,
         shadowWork: currentState.shadowWork,
         operatingManual: currentState.operatingManual,
-        korczakAnalysis: currentState.korczakAnalysis
+        korczakAnalysis: currentState.korczakAnalysis,
+        advices: currentState.advices
       })
         .catch((err) => {
           console.error("Sync error:", err);
@@ -249,7 +309,8 @@ export default function App() {
     useAppStore.getState().lifeThemes,
     useAppStore.getState().shadowWork,
     useAppStore.getState().operatingManual,
-    useAppStore.getState().korczakAnalysis
+    useAppStore.getState().korczakAnalysis,
+    useAppStore.getState().advices
   ]);
 
   // Generate Weekly Insight when entries change
@@ -298,7 +359,8 @@ export default function App() {
     dailyGtd, setDailyGtd,
     operatingManual, setOperatingManual,
     korczakAnalysis, setKorczakAnalysis,
-    majorInsights, setMajorInsights
+    majorInsights, setMajorInsights,
+    advices, setAdvices
   } = useAppStore();
 
   useEffect(() => {
@@ -378,11 +440,32 @@ export default function App() {
             console.error(e);
           }
       }
+
+      // 6. Advices Generator (Triggered if 5 new entries since last generation)
+      const currentEntryCount = entries.length;
+      const lastAdvicesCount = advices?.lastEntryCount || 0;
+      if (currentEntryCount - lastAdvicesCount >= 5 && currentEntryCount > 0) {
+        try {
+          const generatedAdvices = await generateAdvices(entries, apiKey);
+          const history = advices?.history || [];
+          setAdvices({
+            lastEntryCount: currentEntryCount,
+            history: [{
+              timestamp: Date.now(),
+              work: generatedAdvices.work,
+              family: generatedAdvices.family,
+              mental: generatedAdvices.mental
+            }, ...history]
+          });
+        } catch (e) {
+          console.error("Failed to generate advices:", e);
+        }
+      }
     };
 
     const timeoutId = setTimeout(runAdvancedAnalysis, 10000);
     return () => clearTimeout(timeoutId);
-  }, [entries.length, apiKey, dailyGtd?.lastDate, lifeThemes?.lastWeeklyDate, lifeThemes?.lastMonthlyDate, shadowWork?.lastDate, operatingManual?.lastDate, korczakAnalysis?.lastDate]);
+  }, [entries.length, apiKey, dailyGtd?.lastDate, lifeThemes?.lastWeeklyDate, lifeThemes?.lastMonthlyDate, shadowWork?.lastDate, operatingManual?.lastDate, korczakAnalysis?.lastDate, advices?.lastEntryCount]);
 
 
 
@@ -436,7 +519,7 @@ export default function App() {
       const socraticInstruction = `
 אתה מאמן סוקרטי מתקדם וחד בשם 'ענן המחשבות'. דבר בעברית בלבד.
 תפקידך הוא לא רק להקשיב, אלא לאתגר את גיא (PROACTIVE PROBING). 
-אם אתה מזהה סתירה, תירוץ, או "סיפור" שגיא מספר לעצמו כדי להימנע ממאמץ או מכאב - עצור אותו ושאל שאלה נוקבת.
+אם אתה מזהה סתירה, תירוץ, או "סיפור" שגיא מספר לעצמו כדי להימנע ממאמץ או מכאב - עצור אותו ושאל שאלה נוקבת. פנה אליו ישירות בגוף שני ("אתה").
 
 היה "פרקליט השטן" (Shadow Work Coach): חפש את מה שגיא לא אומר. שאל על הפער בין מה שהוא תכנן לעשות (Execution Gap) לבין מה שהוא מדווח עכשיו.
 
@@ -458,6 +541,7 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
 3. חפש דפוסים בין העבר להווה.
 4. "תקוף" בעדינות הנחות יסוד מוטעות או אמונות מגבילות.
 5. דבר בקצרה כדי לתת לגיא מקום להגיב, אך התערב כשצריך להחזיר את השיחה לעומק.
+6. פנה למשתמש תמיד בגוף שני ("אתה") ולא בשמו.
 `;
 
       setIsLiveActive(true);
@@ -558,9 +642,8 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
     ).join('\n');
 
     const customInstruction = `
-      אתה מלווה אישי, אנליסט דפוסים ומאמן סוקרטי מאתגר בשם 'ענן המחשבות'. 
       התפקיד שלך הוא להפוך את המפגש הקולי לזמן של "תחקיר עומק" ולא רק פריקה. 
-      דבר בעברית בלבד. היה אמפתי אך נוקב וחד.
+      دבר בעברית בלבד. היה אמפתי אך נוקב וחד. פנה למשתמש תמיד בגוף שני ("אתה").
 
       עקרונות האימון והאתגור:
       1. פרואקטיביות: אל תחכה שגיא ישאל. אם הוא אומר משהו שסותר הצהרת עבר או תובנה קיימת - התערב מיד וציין זאת.
@@ -632,6 +715,17 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
             title={isAuthenticated ? "מחובר ל-Drive (התנתק)" : "התחבר לשמירה ב-Drive"}
           >
             {isSyncing ? <Loader2 size={18} className="animate-spin" /> : <Cloud size={20} className={cn(isAuthenticated ? "text-emerald-600" : "text-white/40")} />}
+          </button>
+          <button
+            onClick={() => window.location.href = getStravaAuthUrl()}
+            disabled={isSyncing}
+            className={cn(
+              "w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-sm border",
+              useAppStore.getState().stravaAuth ? "bg-[#FC4C02]/20 border-[#FC4C02]/30" : "bg-white/10 border-white/10"
+            )}
+            title="חבר את Strava"
+          >
+            <Activity size={20} className={cn(useAppStore.getState().stravaAuth ? "text-[#FC4C02]" : "text-white/40")} />
           </button>
           <button
             onClick={() => setShowKeyModal(true)}
@@ -1286,7 +1380,8 @@ function InsightsTab({
 }) {
   const { 
     majorInsights, setMajorInsights,
-    chatMessages, apiKey, entries 
+    chatMessages, apiKey, entries,
+    dailyGtd
   } = useAppStore();
   const [showMajorInsights, setShowMajorInsights] = useState(false);
   const [showAllTimeInsights, setShowAllTimeInsights] = useState(false);
@@ -1429,8 +1524,8 @@ function InsightsTab({
               <Star size={24} />
             </div>
             <div className="text-right">
-              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">4 תובנות עיקריות</span>
-              <span className="block text-xs text-[#0A3B66]/60 uppercase tracking-widest mt-1">גלובלי, שבועי, משמעותי ותת-מודע</span>
+              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">תובנות עיקריות</span>
+              <span className="block text-xs text-[#0A3B66]/60 uppercase tracking-widest mt-1">יומי, גלובלי, שבועי, משמעותי ותת-מודע</span>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -1452,6 +1547,21 @@ function InsightsTab({
 
         {showMajorInsights && (
           <div className="p-6 pt-0 space-y-4 animate-in fade-in slide-in-from-top-2 cursor-default">
+            {/* Daily GTD Insight - Always first */}
+            {dailyGtd?.insight && (
+              <div className="bg-[#FFC107]/20 rounded-3xl p-5 border border-[#FFC107]/30 group relative hover:bg-[#FFC107]/30 transition-all">
+                <div className="flex justify-between items-start mb-2 sticky top-0 bg-[#FFC107]/10 backdrop-blur-md z-10 p-2 mx-[-8px] rounded-xl border border-[#FFC107]/20 shadow-sm">
+                  <span className="text-[10px] font-bold text-[#0A3B66]/80 uppercase tracking-tighter flex items-center gap-1">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#FFC107] animate-pulse"></span>
+                    תובנה יומית
+                  </span>
+                  <SpeechButton text={dailyGtd.insight} className="w-8 h-8 opacity-40 group-hover:opacity-100 text-[#0A3B66]" />
+                </div>
+                <p className="text-sm leading-relaxed text-[#0A3B66] whitespace-pre-wrap break-words font-medium">
+                  {dailyGtd.insight}
+                </p>
+              </div>
+            )}
             {majorInsights.length > 0 ? (
               majorInsights.map((insight, idx) => (
                 <div key={idx} className="bg-white/40 rounded-3xl p-5 border border-white/20 group relative hover:bg-white/60 transition-all">
