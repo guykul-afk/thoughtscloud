@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Mic,
   Send,
@@ -15,8 +15,16 @@ import {
   X,
   Star,
   Cloud,
+  Check,
+  Sparkles,
   Activity,
-  Check
+  Lightbulb,
+  Briefcase,
+  Home,
+  Heart,
+  Pencil,
+  Quote,
+  Compass
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -29,17 +37,19 @@ import {
   analyzeExecutionGap,
   generateEmotionalGTDInsight,
   generateOperatingManual,
-  generateKorczakAnalysis,
+
   generateMajorInsights,
   generateAdvices,
+  generateShadowQuickAdvices,
+  generateSingleShadowQuickAdvice,
   processAudioSession,
   processTextSession,
   SUPPORTED_MODELS,
-  setActiveModel
+  setActiveModel,
+  autoDiscoverModel
 } from './services/ai';
 import { GeminiLiveService, type LiveChatStatus } from './services/live-ai';
 import { loadGapi, loadGis, handleAuthClick, handleSignoutClick, setAuthChangeCallback, uploadStateToDrive, downloadStateFromDrive, forceCheckAuth, dumpStorage } from './services/drive';
-import { getStravaAuthUrl, exchangeCodeForToken, fetchStravaActivities } from './services/strava';
 import VoicePulse from './components/VoicePulse';
 import DashboardTab from './components/DashboardTab';
 import SpeechButton from './components/SpeechButton';
@@ -53,7 +63,7 @@ export function cn(...inputs: ClassValue[]) {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'actions' | 'insights' | 'dashboard' | 'history'>('home');
-  const { apiKey, setApiKey, entries, setEntries } = useAppStore();
+  const { apiKey, setApiKey, entries, setEntries, preferredModel, preferredApiVersion, setPreferredModel } = useAppStore();
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [isTestingKey, setIsTestingKey] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -86,6 +96,21 @@ export default function App() {
       console.warn = originalWarn;
     };
   }, []);
+
+  // Restore preferred model & auto-discover the best available model
+  useEffect(() => {
+    if (preferredModel && preferredApiVersion) {
+      setActiveModel(preferredModel, preferredApiVersion);
+    }
+    if (apiKey) {
+      autoDiscoverModel(apiKey).then(model => {
+        if (model) {
+          setPreferredModel(model.name, model.version);
+        }
+      });
+    }
+  }, [apiKey, preferredModel, preferredApiVersion]);
+
 
   useEffect(() => {
     const checkStandalone = () => {
@@ -178,10 +203,30 @@ export default function App() {
       const state = await downloadStateFromDrive();
       if (state) {
         if (state.entries && Array.isArray(state.entries)) {
-          setEntries(state.entries);
+          // Merge local entries with downloaded entries by unique ID
+          const localEntries = useAppStore.getState().entries || [];
+          const mergedEntries = [...localEntries];
+          state.entries.forEach((driveEntry: any) => {
+            if (!mergedEntries.some(e => e.id === driveEntry.id)) {
+              mergedEntries.push(driveEntry);
+            }
+          });
+          // Sort by timestamp descending (newest first) to maintain chronological order
+          mergedEntries.sort((a, b) => b.timestamp - a.timestamp);
+          setEntries(mergedEntries);
         }
         if (state.chatMessages && Array.isArray(state.chatMessages)) {
-          useAppStore.getState().setChatMessages(state.chatMessages);
+          // Merge local chat messages with downloaded chat messages by content & timestamp
+          const localMessages = useAppStore.getState().chatMessages || [];
+          const mergedMsgs = [...localMessages];
+          state.chatMessages.forEach((driveMsg: any) => {
+            if (!mergedMsgs.some(m => m.timestamp === driveMsg.timestamp && m.content === driveMsg.content)) {
+              mergedMsgs.push(driveMsg);
+            }
+          });
+          // Sort by timestamp ascending (chronological flow)
+          mergedMsgs.sort((a, b) => a.timestamp - b.timestamp);
+          useAppStore.getState().setChatMessages(mergedMsgs);
         }
         if (state.weeklyInsight) {
           useAppStore.getState().setWeeklyInsight(state.weeklyInsight);
@@ -201,9 +246,7 @@ export default function App() {
         if (state.operatingManual) {
           useAppStore.getState().setOperatingManual(state.operatingManual);
         }
-        if (state.korczakAnalysis) {
-          useAppStore.getState().setKorczakAnalysis(state.korczakAnalysis);
-        }
+
         if (state.advices) {
           useAppStore.getState().setAdvices(state.advices);
         }
@@ -215,63 +258,11 @@ export default function App() {
     }
   };
 
-  // Handle Strava OAuth Callback
-  useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const code = urlParams.get('code');
-    const scope = urlParams.get('scope');
 
-    if (code && scope?.includes('activity:read')) {
-      console.log("TRACE: Detected Strava OAuth code. Exchanging...");
-      setIsSyncing(true);
-      exchangeCodeForToken(code)
-        .then(() => {
-          console.log("TRACE: Strava Auth Successful");
-          // Clear query params without reload
-          window.history.replaceState({}, document.title, window.location.pathname);
-          // Initial fetch (last 48h)
-          return fetchStravaActivities(Date.now() - 48 * 3600000);
-        })
-        .catch(err => {
-          console.error("Strava Auth Error:", err);
-          alert("שגיאה בחיבור ל-Strava: " + err.message);
-        })
-        .finally(() => setIsSyncing(false));
-    }
-  }, []);
-
-  // Daily Strava Sync at 09:00
-  useEffect(() => {
-    const checkAndSyncStrava = async () => {
-      const { stravaAuth, lastStravaSync } = useAppStore.getState();
-      if (!stravaAuth?.accessToken) return;
-
-      const now = new Date();
-      const currentHour = now.getHours();
-      const todayStr = now.toLocaleDateString('en-CA');
-
-      if (currentHour >= 9 && lastStravaSync !== todayStr) {
-        console.log("TRACE: Triggering daily Strava sync (09:00 threshold reached)");
-        try {
-          // Fetch activities since last sync or last 48h
-          await fetchStravaActivities(Date.now() - 48 * 3600000);
-        } catch (e) {
-          console.error("Daily Strava sync failed:", e);
-        }
-      }
-    };
-
-    // Check every hour
-    const interval = setInterval(checkAndSyncStrava, 3600000);
-    // Also check immediately on load
-    checkAndSyncStrava();
-
-    return () => clearInterval(interval);
-  }, [isAuthenticated]);
 
   // Sync to drive whenever entries or chatMessages change (with simple debounce)
   useEffect(() => {
-    if (!isAuthenticated || isRecording) return; // DON'T SYNC WHILE RECORDING
+    if (!isAuthenticated || isRecording || isSyncing) return; // DON'T SYNC WHILE RECORDING OR DOWNLOADING
     const chatLen = useAppStore.getState().chatMessages.length;
     if (entries.length === 0 && chatLen === 0) return;
 
@@ -288,7 +279,7 @@ export default function App() {
         lifeThemes: currentState.lifeThemes,
         shadowWork: currentState.shadowWork,
         operatingManual: currentState.operatingManual,
-        korczakAnalysis: currentState.korczakAnalysis,
+
         advices: currentState.advices
       })
         .catch((err) => {
@@ -302,6 +293,7 @@ export default function App() {
   }, [
     entries,
     isAuthenticated,
+    isSyncing,
     useAppStore.getState().chatMessages.length,
     useAppStore.getState().weeklyInsight,
     useAppStore.getState().categoricalInsights,
@@ -309,7 +301,7 @@ export default function App() {
     useAppStore.getState().lifeThemes,
     useAppStore.getState().shadowWork,
     useAppStore.getState().operatingManual,
-    useAppStore.getState().korczakAnalysis,
+
     useAppStore.getState().advices
   ]);
 
@@ -358,9 +350,10 @@ export default function App() {
     shadowWork, setShadowWork,
     dailyGtd, setDailyGtd,
     operatingManual, setOperatingManual,
-    korczakAnalysis, setKorczakAnalysis,
     majorInsights, setMajorInsights,
-    advices, setAdvices
+    lastMajorInsightsCount, setLastMajorInsightsCount,
+    advices, setAdvices,
+    shadowQuickAdvices, setShadowQuickAdvices
   } = useAppStore();
 
   useEffect(() => {
@@ -415,29 +408,16 @@ export default function App() {
         }
       }
 
-      // 4. Korczak Weekly Time Audit (Every 7 days)
-      const lastKorczakDate = korczakAnalysis?.lastDate ? new Date(korczakAnalysis.lastDate) : new Date(0);
-      const korczakDiffDays = Math.floor((now.getTime() - lastKorczakDate.getTime()) / (1000 * 3600 * 24));
 
-      if (!korczakAnalysis || korczakDiffDays >= 7) {
-        try {
-          const insight = await generateKorczakAnalysis(entries, apiKey);
-          setKorczakAnalysis({ insight, lastDate: todayStr });
-        } catch (e) {
-          console.error("Korczak analysis error:", e);
-        }
-      }
 
-      // 5. Daily Subconscious Insight (Triggered if after 02:00)
-      const currentHour = now.getHours();
-      if (currentHour >= 2 && majorInsights.length < 4) {
-          // Major Insights now return 4 items, the 4th is the subconscious one.
-          // Handled elsewhere, but we track time here if needed
+      // 5. Major Insights (Triggered if new entries exist since last analysis)
+      if (entries.length > 0 && entries.length !== lastMajorInsightsCount) {
           try {
             const insights = await generateMajorInsights(entries, apiKey, majorInsights);
             setMajorInsights(insights);
+            setLastMajorInsightsCount(entries.length);
           } catch (e) {
-            console.error(e);
+            console.error("Major Insights error:", e);
           }
       }
 
@@ -461,11 +441,69 @@ export default function App() {
           console.error("Failed to generate advices:", e);
         }
       }
+      // 7. Shadow Quick Advices (Triggered if 5 new entries since last generation)
+      const lastShadowAdvicesCount = shadowQuickAdvices?.lastEntryCount || 0;
+      
+      if (currentEntryCount - lastShadowAdvicesCount >= 5 && currentEntryCount > 0 && shadowWork?.insight) {
+        try {
+          const generatedShadowAdvices = await generateShadowQuickAdvices(shadowWork.insight, entries, apiKey);
+          setShadowQuickAdvices({
+            lastEntryCount: currentEntryCount,
+            advices: generatedShadowAdvices.slice(0, 5),
+            oldestIndex: 0,
+            lastUpdateDate: todayStr
+          });
+        } catch (e) {
+          console.error("Failed to generate shadow quick advices:", e);
+        }
+      } else if (shadowWork?.insight && apiKey) {
+        // 8. Daily update for Shadow Quick Advices (change the oldest advice daily)
+        const currentAdvices = shadowQuickAdvices?.advices || [
+          "קח אוויר לפני שאתה מתפרץ בפגישות שמרגישות לחוצות.", 
+          "זכור לבצע פאוזה ולא להגיב מיד לטריגרים שקשורים לסמכות.",
+          "הקדש 5 דקות בסוף היום לרפלקציה על הפעולות שדחית.",
+          "שים לב מתי אתה משתמש במילה 'צריך' והחלף אותה ב'בוחר'.",
+          "זהה רגש אחד חסום היום ותן לו ביטוי בכתיבה של שתי דקות."
+        ];
+        
+        const lastUpdateDate = shadowQuickAdvices?.lastUpdateDate;
+        const oldestIndex = shadowQuickAdvices?.oldestIndex ?? 0;
+        
+        if (!lastUpdateDate || lastUpdateDate !== todayStr) {
+          try {
+            let updatedAdvices = [...currentAdvices];
+            while (updatedAdvices.length < 5) {
+              updatedAdvices.push("נשום עמוק והתבונן בתגובה שלך.");
+            }
+            if (updatedAdvices.length > 5) {
+              updatedAdvices = updatedAdvices.slice(0, 5);
+            }
+            
+            const newAdvice = await generateSingleShadowQuickAdvice(
+              shadowWork.insight,
+              entries,
+              updatedAdvices,
+              apiKey
+            );
+            
+            updatedAdvices[oldestIndex] = newAdvice;
+            
+            setShadowQuickAdvices({
+              lastEntryCount: shadowQuickAdvices?.lastEntryCount ?? currentEntryCount,
+              advices: updatedAdvices,
+              oldestIndex: (oldestIndex + 1) % 5,
+              lastUpdateDate: todayStr
+            });
+          } catch (e) {
+            console.error("Failed to perform daily shadow advice rotation:", e);
+          }
+        }
+      }
     };
 
     const timeoutId = setTimeout(runAdvancedAnalysis, 10000);
     return () => clearTimeout(timeoutId);
-  }, [entries.length, apiKey, dailyGtd?.lastDate, lifeThemes?.lastWeeklyDate, lifeThemes?.lastMonthlyDate, shadowWork?.lastDate, operatingManual?.lastDate, korczakAnalysis?.lastDate, advices?.lastEntryCount]);
+  }, [entries.length, apiKey, dailyGtd?.lastDate, lifeThemes?.lastWeeklyDate, lifeThemes?.lastMonthlyDate, shadowWork?.lastDate, operatingManual?.lastDate, advices?.lastEntryCount, shadowQuickAdvices?.lastEntryCount, shadowQuickAdvices?.lastUpdateDate, shadowQuickAdvices?.oldestIndex, shadowWork?.insight, lastMajorInsightsCount]);
 
 
 
@@ -485,6 +523,7 @@ export default function App() {
         // Small test call
         await queryInsights("היי, האם המפתח עובד?", [{ transcript: "בדיקה", timestamp: Date.now() }], keyToTest);
         setTestResult({ success: true, message: `המפתח תקין! (פעיל עם: ${model.name}) ✅` });
+        setPreferredModel(model.name, model.version);
         foundWorkableModel = true;
         break;
       } catch (e: any) {
@@ -561,8 +600,8 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
             if (finalTranscript && apiKey) {
               try {
                 // Background process the conversation as a diary entry
-                const currentOpenTasks = useAppStore.getState().entries.flatMap((e: any) => e.tasks.map((t: any) => typeof t === 'string' ? t : t.text));
-                const result = await processTextSession(finalTranscript, apiKey, currentOpenTasks);
+                const currentOpenThreads = useAppStore.getState().entries.flatMap((e: any) => (e.openThreads || []).map((t: any) => typeof t === 'string' ? t : t.text));
+                const result = await processTextSession(finalTranscript, apiKey, currentOpenThreads);
                 useAppStore.getState().addEntry(result);
               } catch (e) {
                 console.error("Failed to save live session to diary", e);
@@ -609,7 +648,7 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
       // Save Q&A as raw material (DiaryEntry)
       addEntry({
         transcript: `שאלה: ${userMsg}\nתשובה: ${response}`,
-        tasks: [],
+        openThreads: [],
         insights: [response],
         triples: [],
         topics: ['מענה לשאלה'],
@@ -628,8 +667,6 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
 
     const weeklyText = weeklyInsight ? `תובנה שבועית: ${weeklyInsight}` : '';
     const categoricalText = categoricalInsights ? `תובנות לפי קטגוריות: עבודה - ${categoricalInsights.work}, משפחה - ${categoricalInsights.family}, אישי - ${categoricalInsights.personal}` : '';
-    const { korczakAnalysis } = useAppStore.getState();
-    const korczakText = korczakAnalysis?.insight ? `ניתוח לפי עשרת העניינים של קורצ'אק: ${korczakAnalysis.insight}` : '';
 
     // Recent chat history summary
     const chatSummary = chatMessages.slice(-5).map(m =>
@@ -655,7 +692,7 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
       להלן ההקשר המלא מהמערכת:
       ${weeklyText}
       ${categoricalText}
-      ${korczakText}
+
 
       היסטוריית הצ'אט האחרונה:
       ${chatSummary}
@@ -717,17 +754,6 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
             {isSyncing ? <Loader2 size={18} className="animate-spin" /> : <Cloud size={20} className={cn(isAuthenticated ? "text-emerald-600" : "text-white/40")} />}
           </button>
           <button
-            onClick={() => window.location.href = getStravaAuthUrl()}
-            disabled={isSyncing}
-            className={cn(
-              "w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-sm border",
-              useAppStore.getState().stravaAuth ? "bg-[#FC4C02]/20 border-[#FC4C02]/30" : "bg-white/10 border-white/10"
-            )}
-            title="חבר את Strava"
-          >
-            <Activity size={20} className={cn(useAppStore.getState().stravaAuth ? "text-[#FC4C02]" : "text-white/40")} />
-          </button>
-          <button
             onClick={() => setShowKeyModal(true)}
             className="w-10 h-10 bg-white rounded-xl flex items-center justify-center text-[#0D3B66] shadow-md border border-gray-100 hover:bg-gray-50 transition-all"
           >
@@ -741,7 +767,7 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
         <div className="fixed inset-0 z-[100] bg-[#0A192F] text-xs font-mono p-4 flex flex-col overflow-hidden">
            <div className="flex justify-between items-center mb-4 pb-2 border-b border-white/20">
               <h2 className="text-emerald-400 font-bold flex items-center gap-2">
-                 <Activity size={14} /> לוח בקרה דיאגנוסטי
+                 לוח בקרה דיאגנוסטי
               </h2>
               <button 
                 onClick={() => setShowDiagnostics(false)}
@@ -854,7 +880,12 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
             handleToggleVoice={handleToggleVoice}
           />
         )}
-        {activeTab === 'actions' && <ActionsTab />}
+        {activeTab === 'actions' && (
+          <OpenThreadsTab 
+            setActiveTab={setActiveTab}
+            setInput={setInput}
+          />
+        )}
         {activeTab === 'insights' && (
           <InsightsTab 
             isLiveActive={isLiveActive} 
@@ -875,7 +906,7 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
       <div className="fixed bottom-0 left-0 right-0 z-[100] flex justify-center px-6 pb-[env(safe-area-inset-bottom,24px)] pointer-events-none">
         <nav className="w-full h-20 bg-[#0D3B66]/80 backdrop-blur-3xl rounded-[2.5rem] flex justify-around items-center px-4 shadow-2xl border border-white/10 pointer-events-auto" dir="rtl">
           <NavItem id="home" label="בית" isActive={activeTab === 'home'} onClick={() => setActiveTab('home')} />
-          <NavItem id="actions" label="פעולות" isActive={activeTab === 'actions'} onClick={() => setActiveTab('actions')} />
+          <NavItem id="actions" label="חוטים" isActive={activeTab === 'actions'} onClick={() => setActiveTab('actions')} />
           <NavItem id="insights" label="תובנות" isActive={activeTab === 'insights'} onClick={() => setActiveTab('insights')} />
           <NavItem id="dashboard" label="מבט על" isActive={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
           <NavItem id="history" label="יומן" isActive={activeTab === 'history'} onClick={() => setActiveTab('history')} />
@@ -1046,9 +1077,13 @@ function HomeTab({
 
         setIsProcessingAudio(true);
         try {
-          const currentOpenTasks = entries.flatMap((e: any) => e.tasks.map((t: any) => typeof t === 'string' ? t : t.text));
-          const result = await processAudioSession(audioBlob, apiKey, currentOpenTasks);
-          addEntry(result);
+          const currentOpenThreads = entries.flatMap((e: any) => (e.openThreads || []).map((t: any) => typeof t === 'string' ? t : t.text));
+          const result = await processAudioSession(audioBlob, apiKey, currentOpenThreads);
+          if (result.transcript === 'NO_SPEECH_DETECTED') {
+            alert("לא זוהה דיבור ברור בהקלטה, הרשומה בוטלה ולא נשמרה ביומן.");
+          } else {
+            addEntry(result);
+          }
         } catch (e: any) {
           console.error("Recording process error:", e);
           alert("שגיאה בתמלול וניתוח ההקלטה (" + e.name + "): " + (e.message || JSON.stringify(e)));
@@ -1125,8 +1160,8 @@ function HomeTab({
     if (!textInput.trim() || !apiKey) return;
     setIsProcessingText(true);
     try {
-      const currentOpenTasks = entries.flatMap((e: any) => e.tasks.map((t: any) => typeof t === 'string' ? t : t.text));
-      const result = await processTextSession(textInput, apiKey, currentOpenTasks);
+      const currentOpenThreads = entries.flatMap((e: any) => (e.openThreads || []).map((t: any) => typeof t === 'string' ? t : t.text));
+      const result = await processTextSession(textInput, apiKey, currentOpenThreads);
       addEntry(result);
       setTextInput('');
       setShowTextInput(false);
@@ -1191,7 +1226,9 @@ function HomeTab({
                   : "bg-white/20 backdrop-blur-md text-white hover:bg-white/30"
               )}
             >
-              <Activity size={24} />
+              <div className="w-6 h-6 rounded-full border-2 border-current animate-pulse flex items-center justify-center">
+                <div className="w-2 h-2 rounded-full bg-current" />
+              </div>
               <span className="text-[10px] font-bold mt-1 uppercase">LIVE</span>
             </button>
           )}
@@ -1271,89 +1308,136 @@ function HomeTab({
   );
 }
 
-function ActionsTab() {
-  const { entries, toggleTaskImportance, removeTask } = useAppStore();
+function OpenThreadsTab({ 
+  setActiveTab, 
+  setInput 
+}: { 
+  setActiveTab: (tab: 'home' | 'actions' | 'insights' | 'dashboard' | 'history') => void;
+  setInput: (val: string) => void;
+}) {
+  const { entries, toggleThreadResolution, removeThread } = useAppStore();
   
-  // Flatten all tasks from all entries
-  const allTasks = entries.flatMap(e => 
-    e.tasks.map(t => {
-      const text = typeof t === 'string' ? t : t.text;
-      const isImportant = typeof t === 'string' ? false : t.isImportant;
-      return { entryId: e.id, text, isImportant };
-    })
+  // Flatten all open threads from all entries
+  const allThreads = entries.flatMap(e => 
+    (e.openThreads || []).map(t => ({
+      entryId: e.id,
+      text: t.text,
+      isResolved: t.isResolved
+    }))
   );
 
-  const importantTasks = allTasks.filter(t => t.isImportant);
-  const otherTasks = allTasks.filter(t => !t.isImportant);
+  const activeThreads = allThreads.filter(t => !t.isResolved);
+  const resolvedThreads = allThreads.filter(t => t.isResolved);
 
-  const renderTask = (item: any, idx: number) => (
-    <div key={`${item.entryId}-${item.text}-${idx}`} className="bg-[#0D3B66]/40 backdrop-blur-3xl rounded-[2rem] p-5 flex items-center justify-between border border-white/10 shadow-2xl group hover:bg-white/5 transition-all">
-      <div className="flex items-center gap-4 flex-1">
+  const handleReflect = (text: string) => {
+    setInput(`היי, ביומן שלי עלה החוט הבא: "${text}". תוכל לעזור לי להרהר בזה ולשאול אותי שאלות סוקרטיות כדי לקדם או לפתור אותו?`);
+    setActiveTab('insights');
+  };
+
+  const renderThread = (item: any, idx: number, isResolvedList: boolean) => (
+    <div 
+      key={`${item.entryId}-${item.text}-${idx}`} 
+      className={cn(
+        "backdrop-blur-3xl rounded-[2rem] p-5 flex flex-col sm:flex-row sm:items-center justify-between border shadow-2xl group transition-all gap-4",
+        isResolvedList 
+          ? "bg-white/5 border-white/5 opacity-55 hover:opacity-80"
+          : "bg-[#0D3B66]/40 border-white/10 hover:bg-[#0D3B66]/50 hover:border-white/20"
+      )}
+    >
+      <div className="flex items-start gap-4 flex-1">
+        <div className={cn(
+          "w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 border",
+          isResolvedList
+            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+            : "bg-white/5 text-white/40 border-white/5"
+        )}>
+          {isResolvedList ? <Check size={18} /> : <Compass size={18} className="animate-pulse" />}
+        </div>
+        <div className="flex flex-col space-y-1">
+          <span className={cn(
+            "text-sm font-medium leading-relaxed text-right",
+            isResolvedList ? "text-white/50 line-through" : "text-white"
+          )}>
+            {item.text}
+          </span>
+        </div>
+      </div>
+      
+      <div className="flex items-center justify-end gap-2 shrink-0">
+        {!isResolvedList && (
+          <button
+            onClick={() => handleReflect(item.text)}
+            className="px-4 py-2 rounded-2xl bg-white/5 hover:bg-white/10 text-xs font-semibold text-white/70 hover:text-white flex items-center gap-1.5 border border-white/5 transition-all active:scale-95"
+            title="הרהר בחוט זה עם ה-AI"
+          >
+            <Sparkles size={14} className="text-[#FFD54F]" />
+            <span>הרהר</span>
+          </button>
+        )}
+        
         <button 
-          onClick={() => toggleTaskImportance(item.entryId, item.text)}
+          onClick={() => toggleThreadResolution(item.entryId, item.text)}
           className={cn(
-            "w-10 h-10 rounded-2xl flex items-center justify-center transition-all border",
-            item.isImportant 
-              ? "bg-[#FFD54F]/20 text-[#FFD54F] border-[#FFD54F]/30" 
-              : "bg-white/5 text-white/20 border-white/5 hover:text-white/40"
+            "px-4 py-2 rounded-2xl text-xs font-bold flex items-center gap-1.5 transition-all border active:scale-95",
+            isResolvedList
+              ? "bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border-amber-500/20"
+              : "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/20"
           )}
         >
-          <Star size={18} fill={item.isImportant ? "currentColor" : "none"} />
+          <CheckCircle2 size={14} />
+          <span>{isResolvedList ? "פתח מחדש" : "קצה נסגר"}</span>
         </button>
-        <span className={cn(
-          "text-sm font-medium leading-relaxed",
-          item.isImportant ? "text-white" : "text-white/70"
-        )}>
-          {item.text}
-        </span>
+
+        <button 
+          onClick={() => {
+            if (window.confirm(`האם למחוק לחלוטין את החוט הבא: "${item.text}"?`)) {
+              removeThread(item.entryId, item.text);
+            }
+          }}
+          className="w-10 h-10 rounded-2xl bg-red-500/10 hover:bg-red-500/20 text-red-400 flex items-center justify-center border border-red-500/10 transition-all opacity-0 group-hover:opacity-100 active:scale-95"
+          title="מחק חוט"
+        >
+          <Trash2 size={16} />
+        </button>
       </div>
-      <button 
-        onClick={() => {
-          if (window.confirm(`האם סיימת את המשימה: "${item.text}"?`)) {
-             removeTask(item.entryId, item.text);
-          }
-        }}
-        className="w-10 h-10 rounded-2xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all active:scale-90"
-      >
-        <Check size={20} />
-      </button>
     </div>
   );
 
   return (
-    <div className="w-full flex flex-col space-y-6 pb-12">
+    <div className="w-full flex flex-col space-y-6 pb-24" dir="rtl">
       <div className="flex items-center justify-between px-2">
         <h2 className="text-xl font-bold flex items-center gap-3 text-white/90">
-          <div className="w-10 h-10 rounded-2xl bg-emerald-400/20 flex items-center justify-center text-emerald-400">
-            <CheckCircle2 size={22} />
+          <div className="w-10 h-10 rounded-2xl bg-[#FFD54F]/20 flex items-center justify-center text-[#FFD54F] ml-2">
+            <Compass size={22} />
           </div>
-          פעולות לביצוע
+          חוטים במחשבה
         </h2>
       </div>
 
-      {allTasks.length === 0 ? (
+      {allThreads.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center text-center p-12 bg-white/5 rounded-[3rem] border border-dashed border-white/10">
           <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center text-white/10 mb-4">
-            <Notebook size={40} strokeWidth={1} />
+            <Compass size={40} strokeWidth={1} />
           </div>
-          <p className="text-white/40 font-medium">אין משימות פתוחות כרגע.</p>
+          <p className="text-white/40 font-medium">אין חוטים פתוחים כרגע.</p>
+          <p className="text-white/20 text-xs mt-1">הם ייווצרו אוטומטית כשתשתף דילמות או כוונות בהקלטות היומן שלך.</p>
         </div>
       ) : (
         <div className="flex-1 space-y-8 pr-1">
-          {importantTasks.length > 0 && (
+          {activeThreads.length > 0 && (
             <div className="space-y-4">
-              <h3 className="text-[10px] font-bold text-[#FFD54F] uppercase tracking-[0.2em] px-4">פעולות חשובות</h3>
+              <h3 className="text-[10px] font-bold text-[#FFD54F] uppercase tracking-[0.2em] px-4">חוטים פעילים</h3>
               <div className="space-y-3">
-                {importantTasks.map(renderTask)}
+                {activeThreads.map((t, i) => renderThread(t, i, false))}
               </div>
             </div>
           )}
 
-          {otherTasks.length > 0 && (
+          {resolvedThreads.length > 0 && (
             <div className="space-y-4">
-              <h3 className="text-[10px] font-bold text-white/20 uppercase tracking-[0.2em] px-4">שאר הפעולות</h3>
+              <h3 className="text-[10px] font-bold text-emerald-400 uppercase tracking-[0.2em] px-4">קצוות שנסגרו</h3>
               <div className="space-y-3">
-                {otherTasks.map(renderTask)}
+                {resolvedThreads.map((t, i) => renderThread(t, i, true))}
               </div>
             </div>
           )}
@@ -1381,12 +1465,56 @@ function InsightsTab({
   const { 
     majorInsights, setMajorInsights,
     chatMessages, apiKey, entries,
-    dailyGtd
+    dailyGtd, shadowQuickAdvices,
+    operatingManual, shadowWork, advices,
+    updateEntry, removeEntry
   } = useAppStore();
   const [showMajorInsights, setShowMajorInsights] = useState(false);
   const [showAllTimeInsights, setShowAllTimeInsights] = useState(false);
   const [isGeneratingMajor, setIsGeneratingMajor] = useState(false);
   const [isChatExpanded, setIsChatExpanded] = useState(false);
+  const [isManualExpanded, setIsManualExpanded] = useState(false);
+  const [isGapExpanded, setIsGapExpanded] = useState(false);
+  const [isAdvicesExpanded, setIsAdvicesExpanded] = useState(false);
+  const [isQuotesExpanded, setIsQuotesExpanded] = useState(false);
+
+  const [editingQuoteId, setEditingQuoteId] = useState<string | null>(null);
+  const [editQuoteText, setEditQuoteText] = useState('');
+
+  const extractedQuotes = useMemo(() => {
+    console.log('--- Extracted Quotes Diagnostic Start ---');
+    console.log('Total entries:', entries.length);
+    const result = entries.filter(entry => {
+      // 1. Check if any topic contains "ציטוט" (which renders as #ציטוטים or similar in UI)
+      const hasQuoteTopic = (entry.topics || []).some(topic => {
+        if (!topic) return false;
+        const clean = topic.replace(/[\u200e\u200f\s#]/g, '').toLowerCase();
+        const match = clean.includes('ציטוט');
+        if (match) {
+          console.log(`Matched topic in entry [${entry.id}]:`, topic);
+        }
+        return match;
+      });
+
+      // 2. Check if transcript contains the hashtag #ציטוט or #ציטוטים (ignoring RTL/LTR marks and spacing)
+      const normalizedTranscript = entry.transcript.replace(/[\u200e\u200f]/g, '');
+      const hasQuoteHashtag = 
+        /#ציטוט/.test(normalizedTranscript) || 
+        /#\s*ציטוט/.test(normalizedTranscript);
+
+      if (hasQuoteHashtag) {
+        console.log(`Matched hashtag in entry [${entry.id}]:`, entry.transcript.substring(0, 100));
+      }
+
+      const matched = hasQuoteTopic || hasQuoteHashtag;
+      console.log(`Entry [${entry.id}] date [${new Date(entry.timestamp).toLocaleDateString('he-IL')}]: matched = ${matched}, topics =`, entry.topics);
+      return matched;
+    });
+    console.log('Matched entries:', result.length);
+    console.log('--- Extracted Quotes Diagnostic End ---');
+    return result;
+  }, [entries]);
+
 
   const handleGenerateMajor = async () => {
     if (!apiKey) return;
@@ -1430,6 +1558,10 @@ function InsightsTab({
 
   return (
     <div className="w-full flex flex-col space-y-4 pb-12">
+      {/* Visual Diagnostic Block */}
+      <div id="diagnostic-quotes-data" style={{ display: 'none' }} data-total-entries={entries.length} data-extracted={extractedQuotes.length}>
+        {JSON.stringify(entries.map(e => ({ id: e.id, timestamp: e.timestamp, topics: e.topics, transcript: e.transcript.substring(0, 100) })))}
+      </div>
       {/* Main AI Question Input (Now at Top) */}
       <div className="w-full px-2 pt-2 sticky top-0 z-10 bg-gradient-to-b from-[#89CFF0]/80 to-transparent pb-4">
         <div className="bg-white/30 backdrop-blur-2xl rounded-[2rem] border border-white/40 p-2 flex gap-2 items-center shadow-xl">
@@ -1513,6 +1645,100 @@ function InsightsTab({
         </div>
       )}
 
+      {/* Shadow Quick Advices */}
+      <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all relative group mt-4">
+        <button 
+          onClick={() => setIsAdvicesExpanded(!isAdvicesExpanded)}
+          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors relative z-10 text-right"
+        >
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-[#FFD54F] rounded-2xl flex items-center justify-center text-[#0A3B66] shadow-[0_0_20px_rgba(255,213,79,0.4)] group-hover:rotate-12 transition-transform">
+              <Sparkles size={24} />
+            </div>
+            <div className="text-right">
+              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">עצות מהירות</span>
+              <span className="block text-xs text-[#0A3B66]/60 font-medium mt-1">ישומיות יומיומיות מתוך עבודת הצללים</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 text-[#0A3B66]/30">
+            {isAdvicesExpanded ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
+          </div>
+        </button>
+
+        {isAdvicesExpanded && (
+          <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2 cursor-default pl-2">
+            <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-[#FFC107]/20 to-transparent rounded-full -m-10 group-hover:scale-150 transition-transform duration-700 pointer-events-none"></div>
+            
+            <div className="space-y-3 relative z-10">
+              {(() => {
+                const advicesList = shadowQuickAdvices?.advices || [
+                  "קח אוויר לפני שאתה מתפרץ בפגישות שמרגישות לחוצות.", 
+                  "זכור לבצע פאוזה ולא להגיב מיד לטריגרים שקשורים לסמכות.",
+                  "הקדש 5 דקות בסוף היום לרפלקציה על הפעולות שדחית.",
+                  "שים לב מתי אתה משתמש במילה 'צריך' והחלף אותה ב'בוחר'.",
+                  "זהה רגש אחד חסום היום ותן לו ביטוי בכתיבה של שתי דקות."
+                ];
+                
+                const nextToReplaceIndex = shadowQuickAdvices?.oldestIndex ?? 0;
+                const recentlyUpdatedIndex = (nextToReplaceIndex - 1 + 5) % 5;
+                const hasUpdateToday = !!shadowQuickAdvices?.lastUpdateDate;
+                
+                return (
+                  <div className="space-y-3">
+                    {advicesList.map((advice, idx) => {
+                      const isNewest = hasUpdateToday && idx === recentlyUpdatedIndex;
+                      const isOldest = idx === nextToReplaceIndex;
+                      
+                      return (
+                        <div key={idx} className={cn(
+                          "flex gap-3 items-start p-3 rounded-2xl transition-all duration-300",
+                          isNewest 
+                            ? "bg-amber-400/10 border border-amber-400/30 shadow-md scale-[1.01]" 
+                            : "hover:bg-white/5 border border-transparent"
+                        )}>
+                          <div className={cn(
+                            "w-2 h-2 rounded-full mt-2 transition-all duration-300 flex-shrink-0",
+                            isNewest 
+                              ? "bg-[#FFC107] scale-125 shadow-[0_0_10px_rgba(255,193,7,0.8)] animate-pulse" 
+                              : "bg-[#0A3B66]/30"
+                          )}></div>
+                          <div className="flex-1 text-right">
+                            <p className={cn(
+                              "text-sm leading-relaxed",
+                              isNewest ? "text-[#0A3B66] font-bold" : "text-[#0A3B66]/90 font-medium"
+                            )}>
+                              {advice}
+                            </p>
+                            <div className="flex justify-start gap-2 mt-1">
+                              {isNewest && (
+                                <span className="inline-block text-[9px] text-amber-700 font-bold bg-amber-200/50 px-2 py-0.5 rounded-full">
+                                  עודכן היום (העצה הכי חדשה)
+                                </span>
+                              )}
+                              {isOldest && !isNewest && (
+                                <span className="inline-block text-[9px] text-[#0A3B66]/40 font-semibold bg-[#0A3B66]/5 px-2 py-0.5 rounded-full">
+                                  העצה הוותיקה ביותר (תוחלף מחר)
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <div className="flex justify-between items-center pt-3 border-t border-white/20 mt-3 text-[10px] text-[#0A3B66]/50">
+                      <span className="font-medium">5 עצות פעילות במקביל (עצה אחת ותיקה מתחלפת בכל יום)</span>
+                      <span className="font-mono bg-white/30 px-2 py-0.5 rounded-full font-bold">
+                        {new Date().toLocaleDateString('he-IL', { weekday: 'long' })}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* 3 Major Insights - Unified Section */}
       <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all">
         <div 
@@ -1586,6 +1812,307 @@ function InsightsTab({
       </div>
 
 
+      {/* Operating Manual Section */}
+      <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all relative group mt-4">
+        <button 
+          onClick={() => setIsManualExpanded(!isManualExpanded)}
+          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors relative z-10 text-right"
+        >
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-[#FFC107] rounded-2xl flex items-center justify-center text-[#0A3B66] shadow-[0_0_20px_rgba(255,213,79,0.4)] group-hover:rotate-12 transition-transform">
+              <Notebook size={24} />
+            </div>
+            <div className="text-right">
+              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">ספר ההפעלה שלי</span>
+              <span className="block text-xs text-[#0A3B66]/60 uppercase tracking-widest mt-1">מבוסס חודש אחרון</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 text-[#0A3B66]/30">
+            {operatingManual?.insight && <SpeechButton text={operatingManual.insight} className="text-[#0A3B66] opacity-40 hover:opacity-100" />}
+            {isManualExpanded ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
+          </div>
+        </button>
+
+        {isManualExpanded && (
+          <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2 cursor-default">
+            {!operatingManual?.insight ? (
+              <div className="py-10 flex flex-col items-center text-center space-y-4">
+                <Brain size={40} className="text-[#0A3B66]/20" strokeWidth={1} />
+                <p className="text-sm text-[#0A3B66]/40 italic">הדפוסים שלך מתגבשים ברגעים אלו...</p>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="text-sm text-[#0A3B66] leading-relaxed max-h-[400px] overflow-y-auto pr-2 custom-scrollbar space-y-4 font-medium">
+                  {operatingManual.insight.split('\n').filter(l => l.trim()).map((line, i) => {
+                    const isHeader = /^\d+\./.test(line.trim());
+                    if (isHeader) return <h4 key={i} className="text-md font-bold text-[#0A3B66] mt-4">{line}</h4>;
+                    return (
+                      <p key={i} className={cn(
+                        line.trim().startsWith('*') || line.trim().startsWith('-') ? "pr-4 relative before:content-['•'] before:absolute before:right-0 before:text-[#FFC107]" : ""
+                      )}>
+                        {line.replace(/^(\*|-)\s*/, '')}
+                      </p>
+                    );
+                  })}
+                </div>
+                <div className="pt-4 border-t border-white/20 flex items-center justify-between">
+                  <span className="text-[9px] text-[#0A3B66]/40 uppercase tracking-[0.3em] font-bold">נכתב ע"י בינה מלאכותית</span>
+                  <span className="text-[10px] text-[#0A3B66]/50 font-mono font-bold">
+                    עדכון אחרון: {new Date(operatingManual.lastDate!).toLocaleDateString('he-IL')}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Execution Gap / Critical Review Section */}
+      <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all relative group mt-4">
+        <button 
+          onClick={() => setIsGapExpanded(!isGapExpanded)}
+          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors relative z-10 text-right"
+        >
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-red-400/20 rounded-2xl flex items-center justify-center text-red-500 shadow-[0_0_20px_rgba(248,113,113,0.3)] group-hover:rotate-12 transition-transform">
+              <Activity size={24} />
+            </div>
+            <div className="text-right">
+              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">קצת ביקורת לא תזיק</span>
+              <span className="block text-xs text-[#0A3B66]/60 uppercase tracking-widest mt-1">משימות מול מציאות</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 text-[#0A3B66]/30">
+            {shadowWork?.insight && <SpeechButton text={shadowWork.insight} className="text-[#0A3B66] opacity-40 hover:opacity-100" />}
+            {isGapExpanded ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
+          </div>
+        </button>
+
+        {isGapExpanded && (
+          <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2 cursor-default">
+            {!shadowWork?.insight ? (
+              <div className="py-6 flex flex-col items-center text-center space-y-4">
+                <Activity size={32} className="text-[#0A3B66]/20 animate-pulse" />
+                <p className="text-sm text-[#0A3B66]/40 italic">ה-AI מנתח פערים בין התוכניות שלך לביצוע בפועל...</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="text-sm text-[#0A3B66] leading-relaxed max-h-[300px] overflow-y-auto pr-2 custom-scrollbar space-y-3 font-medium">
+                  {shadowWork.insight.split('\n').filter(l => l.trim()).map((line, i) => (
+                    <p key={i} className={cn(
+                      "pb-2 border-b border-white/20 last:border-0",
+                      line.trim().startsWith('*') || line.trim().startsWith('-') ? "pr-4 relative before:content-['•'] before:absolute before:right-0 before:text-red-400" : ""
+                    )}>
+                      {line.replace(/^(\*|-)\s*/, '')}
+                    </p>
+                  ))}
+                </div>
+                <div className="pt-4 border-t border-white/20 flex items-center justify-between">
+                  <span className="text-[9px] text-[#0A3B66]/40 uppercase tracking-[0.3em] font-bold">ניתוח ביקורתי (Shadow Review)</span>
+                  <span className="text-[10px] text-[#0A3B66]/50 font-mono font-bold">
+                    עדכון אחרון: {new Date(shadowWork.lastDate!).toLocaleDateString('he-IL')}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* AI Advices Section */}
+      <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all relative group mt-4">
+        <button 
+          onClick={() => setIsAdvicesExpanded(!isAdvicesExpanded)}
+          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors relative z-10 text-right"
+        >
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-blue-400/20 rounded-2xl flex items-center justify-center text-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.3)] group-hover:rotate-12 transition-transform">
+              <Lightbulb size={24} />
+            </div>
+            <div className="text-right">
+              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">העצות שלי מה-AI</span>
+              <span className="block text-xs text-[#0A3B66]/60 uppercase tracking-widest mt-1">עבודה, משפחה, רווחה נפשית</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 text-[#0A3B66]/30">
+            {isAdvicesExpanded ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
+          </div>
+        </button>
+
+        {isAdvicesExpanded && (
+          <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2 cursor-default">
+            {(!advices?.history || advices.history.length === 0) ? (
+              <div className="py-6 flex flex-col items-center text-center space-y-4">
+                <Lightbulb size={32} className="text-[#0A3B66]/20 animate-pulse" />
+                <p className="text-sm text-[#0A3B66]/40 italic">ה-AI אוסף נתונים ומכין עצות רלוונטיות עבורך...</p>
+              </div>
+            ) : (
+              <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                {advices.history.map((adv, idx) => (
+                  <div key={idx} className="bg-white/40 rounded-3xl p-5 border border-white/20 space-y-4 shadow-sm hover:bg-white/60 transition-all">
+                    <div className="flex items-center justify-between border-b border-white/30 pb-3 mb-3">
+                      <span className="text-[10px] text-[#0A3B66]/50 font-mono font-bold">
+                        {new Date(adv.timestamp).toLocaleDateString('he-IL')}
+                      </span>
+                      {idx === 0 && <span className="text-[9px] bg-[#FFC107]/20 text-[#0A3B66] px-2 py-0.5 rounded-full font-bold tracking-widest border border-[#FFC107]/30">העדכני ביותר</span>}
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                       <Briefcase size={18} className="text-[#0A3B66] mt-0.5 shrink-0 opacity-70" />
+                       <div>
+                          <span className="block text-xs font-bold text-[#0A3B66] mb-1">עבודה</span>
+                          <p className="text-sm text-[#0A3B66] leading-relaxed font-medium">{adv.work}</p>
+                       </div>
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                       <Home size={18} className="text-[#0A3B66] mt-0.5 shrink-0 opacity-70" />
+                       <div>
+                          <span className="block text-xs font-bold text-[#0A3B66] mb-1">משפחה</span>
+                          <p className="text-sm text-[#0A3B66] leading-relaxed font-medium">{adv.family}</p>
+                       </div>
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                       <Heart size={18} className="text-[#0A3B66] mt-0.5 shrink-0 opacity-70" />
+                       <div>
+                          <span className="block text-xs font-bold text-[#0A3B66] mb-1">רווחה נפשית</span>
+                          <p className="text-sm text-[#0A3B66] leading-relaxed font-medium">{adv.mental}</p>
+                       </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Quotes Section */}
+      <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all relative group mt-4">
+        <button 
+          onClick={() => setIsQuotesExpanded(!isQuotesExpanded)}
+          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors relative z-10 text-right"
+        >
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-violet-400/20 rounded-2xl flex items-center justify-center text-violet-500 shadow-[0_0_20px_rgba(139,92,246,0.3)] group-hover:rotate-12 transition-transform">
+              <Quote size={24} />
+            </div>
+            <div className="text-right">
+              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">ציטוטים</span>
+              <span className="block text-xs text-[#0A3B66]/60 uppercase tracking-widest mt-1">פניני חכמה והשראה מתוך כניסות היומן שלך</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 text-[#0A3B66]/30">
+            {isQuotesExpanded ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
+          </div>
+        </button>
+
+        {isQuotesExpanded && (
+          <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2 cursor-default">
+            {extractedQuotes.length === 0 ? (
+              <div className="py-8 flex flex-col items-center text-center space-y-3">
+                <Quote size={32} className="text-[#0A3B66]/20 rotate-180" strokeWidth={1.5} />
+                <p className="text-sm text-[#0A3B66]/50 italic font-medium">אין עדיין ציטוטים ביומן שלך.</p>
+                <p className="text-xs text-[#0A3B66]/40 max-w-xs leading-relaxed">
+                  ה-AI יסווג באופן אוטומטי כניסות המכילות ציטוטים או תובנות מיוחדות תחת <span className="font-bold text-violet-500">ציטוטים</span>, או שתוכל להוסיף את ההאשטאג <span className="font-bold text-violet-500">#ציטוט</span>.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar animate-in fade-in duration-300">
+                {extractedQuotes.map((q) => (
+                  <div key={q.id} className="bg-white/40 rounded-3xl p-5 border border-white/20 space-y-3 shadow-sm hover:bg-white/60 transition-all relative group/item">
+                    <div className="flex items-center justify-between border-b border-white/30 pb-2 mb-2">
+                      <span className="text-[10px] text-[#0A3B66]/50 font-mono font-bold">
+                        {new Date(q.timestamp).toLocaleString('he-IL', { dateStyle: 'medium', timeStyle: 'short' })}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <SpeechButton text={q.transcript} className="bg-white/10 hover:bg-white/20 w-8 h-8 text-[#0A3B66] hover:text-[#0A3B66] transition-all rounded-xl" />
+                        <span className="bg-[#0D3B66]/10 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-[#0A3B66]/90">
+                          {q.mood}
+                        </span>
+                        <button 
+                          onClick={() => {
+                            setEditingQuoteId(q.id);
+                            setEditQuoteText(q.transcript);
+                          }}
+                          className="p-1.5 text-[#0A3B66]/40 hover:text-violet-600 hover:bg-violet-500/10 rounded-lg transition-all active:scale-95"
+                          title="ערוך כניסה"
+                        >
+                          <Pencil size={14} />
+                        </button>
+                        <button 
+                          onClick={() => window.confirm('האם למחוק כניסה זו?') && removeEntry(q.id)}
+                          className="p-1.5 text-[#0A3B66]/40 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all active:scale-95"
+                          title="מחק כניסה"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                    {editingQuoteId === q.id ? (
+                      <div className="w-full mt-2">
+                        <textarea 
+                          value={editQuoteText}
+                          onChange={(e) => setEditQuoteText(e.target.value)}
+                          className="w-full bg-white/25 text-[#0A3B66] placeholder-[#0A3B66]/50 border border-white/30 outline-none resize-none rounded-xl p-3 text-sm leading-relaxed"
+                          rows={4}
+                          dir="rtl"
+                        />
+                        <div className="flex justify-end gap-2 mt-2">
+                          <button 
+                            onClick={() => setEditingQuoteId(null)} 
+                            className="text-[#0A3B66]/60 hover:text-[#0A3B66] text-xs px-3 py-1.5 transition-colors"
+                          >
+                            ביטול
+                          </button>
+                          <button 
+                            onClick={() => {
+                              updateEntry(q.id, editQuoteText);
+                              setEditingQuoteId(null);
+                            }} 
+                            className="bg-violet-600/80 hover:bg-violet-600 text-white text-xs px-4 py-1.5 rounded-lg transition-colors font-medium shadow-sm"
+                          >
+                            שמור שינויים
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-start gap-3">
+                        <Quote size={18} className="text-violet-500 shrink-0 opacity-40 rotate-180 mt-1" />
+                        <p className="text-sm text-[#0A3B66] leading-relaxed font-semibold italic whitespace-pre-wrap">
+                          {q.transcript}
+                        </p>
+                      </div>
+                    )}
+                    {q.topics.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-[#0A3B66]/10">
+                        {q.topics.map((t, i) => {
+                          const isQuoteTag = t.trim().includes('ציטוט') || t.trim().includes('ציטוטים') || t.trim().includes('#ציטוט') || t.trim().includes('#ציטוטים');
+                          return (
+                            <span 
+                              key={i} 
+                              className={cn(
+                                "text-[10px] px-2 py-0.5 rounded-full border transition-all",
+                                isQuoteTag 
+                                  ? "bg-violet-500/20 text-violet-700 border-violet-500/30 font-bold shadow-[0_0_8px_rgba(139,92,246,0.2)]" 
+                                  : "bg-[#0D3B66]/5 text-[#0D3B66]/70 border-[#0D3B66]/10"
+                              )}
+                            >
+                              #{t}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Insights History */}
       <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2rem] overflow-hidden shadow-2xl mt-4">
         <div 
@@ -1624,7 +2151,11 @@ function InsightsTab({
 //
 
 function HistoryTab() {
-  const { entries, clearEntries } = useAppStore();
+  const { entries, removeEntry, updateEntry } = useAppStore();
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
+  const [editTopics, setEditTopics] = useState<string[]>([]);
+  const [newTagVal, setNewTagVal] = useState('');
 
   return (
     <div className="w-full flex flex-col space-y-6 pb-12">
@@ -1635,14 +2166,6 @@ function HistoryTab() {
           </div>
           יומן מחשבות
         </h2>
-        {entries.length > 0 && (
-          <button 
-            onClick={() => confirm('בטוח שברצונך למחוק הכל?') && clearEntries()}
-            className="text-white/40 hover:text-red-400 p-2 transition-colors"
-          >
-            <Trash2 size={18} />
-          </button>
-        )}
       </div>
 
       {entries.length === 0 ? (
@@ -1653,20 +2176,131 @@ function HistoryTab() {
         <div className="space-y-4">
           {entries.map((entry) => (
             <div key={entry.id} className="bg-white/10 backdrop-blur-md rounded-3xl p-5 border border-white/10 space-y-3 group relative overflow-hidden">
-               <div className="absolute top-0 left-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity">
-                 <SpeechButton text={entry.transcript} className="bg-white/10 w-8 h-8" />
-               </div>
-              <div className="flex justify-between items-start">
+              <div className="flex justify-between items-center">
                 <span className="text-xs font-bold text-white/50">
                   {new Date(entry.timestamp).toLocaleString('he-IL', { dateStyle: 'medium', timeStyle: 'short' })}
                 </span>
-                <span className="bg-white/20 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider">
-                  {entry.mood}
-                </span>
+                <div className="flex items-center gap-2 z-10">
+                  <SpeechButton text={entry.transcript} className="bg-white/10 hover:bg-white/20 w-8 h-8 text-white/80 hover:text-white transition-all rounded-xl" />
+                  <span className="bg-white/20 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-white/90">
+                    {entry.mood}
+                  </span>
+                  <button 
+                    onClick={() => {
+                      setEditingId(entry.id);
+                      setEditText(entry.transcript);
+                      setEditTopics(entry.topics || []);
+                      setNewTagVal('');
+                    }}
+                    className="p-1.5 text-white/40 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-all active:scale-95"
+                    title="ערוך כניסה"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button 
+                    onClick={() => window.confirm('האם למחוק כניסה זו?') && removeEntry(entry.id)}
+                    className="p-1.5 text-white/40 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all active:scale-95"
+                    title="מחק כניסה"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               </div>
-              <p className="text-white/90 leading-relaxed text-sm">
-                {entry.transcript}
-              </p>
+              {editingId === entry.id ? (
+                <div className="w-full mt-2 space-y-3">
+                  <textarea 
+                    value={editText}
+                    onChange={(e) => setEditText(e.target.value)}
+                    className="w-full bg-white/20 text-white placeholder-white/50 border border-white/20 outline-none resize-none rounded-xl p-3 text-sm leading-relaxed"
+                    rows={4}
+                    dir="rtl"
+                  />
+                  
+                  {/* Tag Editor UI */}
+                  <div className="bg-white/5 rounded-2xl p-3.5 border border-white/10 space-y-3">
+                    <label className="text-xs font-bold text-white/70 block">ניהול תגיות (#)</label>
+                    
+                    {/* Active tag chips */}
+                    <div className="flex flex-wrap gap-1.5 min-h-[24px] items-center">
+                      {editTopics.length === 0 ? (
+                        <span className="text-xs text-white/30 italic">אין תגיות עדיין...</span>
+                      ) : (
+                        editTopics.map((topic, index) => (
+                          <span 
+                            key={index} 
+                            onClick={() => setEditTopics(editTopics.filter((_, idx) => idx !== index))}
+                            className="bg-blue-400/20 text-blue-200 text-[10px] pl-2 pr-1.5 py-0.5 rounded-full border border-blue-400/30 flex items-center gap-1 group/tag cursor-pointer hover:bg-red-500/20 hover:text-red-200 hover:border-red-500/30 transition-all select-none"
+                            title="לחץ להסרה"
+                          >
+                            #{topic}
+                            <span className="text-[9px] text-white/40 group-hover/tag:text-red-400">×</span>
+                          </span>
+                        ))
+                      )}
+                    </div>
+                    
+                    {/* Input field to add tags */}
+                    <div className="flex items-center gap-2">
+                      <input 
+                        type="text" 
+                        value={newTagVal}
+                        onChange={(e) => setNewTagVal(e.target.value)}
+                        placeholder="הקלד תגית חדשה ולחץ אנטר..." 
+                        className="bg-white/10 text-white placeholder-white/40 text-xs px-3 py-2 rounded-xl border border-white/10 outline-none flex-grow"
+                        dir="rtl"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            const val = newTagVal.trim().replace(/^#/g, '');
+                            if (val && !editTopics.includes(val)) {
+                              setEditTopics([...editTopics, val]);
+                              setNewTagVal('');
+                            }
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const val = newTagVal.trim().replace(/^#/g, '');
+                          if (val && !editTopics.includes(val)) {
+                            setEditTopics([...editTopics, val]);
+                            setNewTagVal('');
+                          }
+                        }}
+                        className="bg-white/10 hover:bg-white/20 text-white text-xs px-3.5 py-2 rounded-xl border border-white/10 transition-colors font-medium active:scale-95"
+                      >
+                        הוסף
+                      </button>
+                    </div>
+                    <p className="text-[9px] text-white/30 leading-normal">
+                      * תגיות אלו מעדכנות את הגרפים ומאפשרות חיפוש וסינון מתקדם. תגיות המוקלדות בטקסט (לדוגמה #עבודה) יתווספו אוטומטית בעת השמירה!
+                    </p>
+                  </div>
+
+                  <div className="flex justify-end gap-2 mt-2">
+                    <button 
+                      onClick={() => setEditingId(null)} 
+                      className="text-white/60 hover:text-white text-xs px-3 py-1.5 transition-colors"
+                    >
+                      ביטול
+                    </button>
+                    <button 
+                      onClick={() => {
+                        updateEntry(entry.id, editText, editTopics);
+                        setEditingId(null);
+                      }} 
+                      className="bg-emerald-500/80 hover:bg-emerald-500 text-white text-xs px-4 py-1.5 rounded-lg transition-colors font-medium shadow-sm active:scale-95"
+                    >
+                      שמור שינויים
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-white/90 leading-relaxed text-sm whitespace-pre-wrap">
+                  {entry.transcript}
+                </p>
+              )}
               {entry.topics.length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {entry.topics.map((t, i) => (

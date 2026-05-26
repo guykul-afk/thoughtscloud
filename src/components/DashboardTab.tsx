@@ -1,17 +1,42 @@
-import { useState } from 'react';
 import { useAppStore } from '../store';
-import { cn } from '../App';
-import { Brain, Star, Notebook, Activity, ChevronDown, ChevronUp, Lightbulb, Briefcase, Home, Heart } from 'lucide-react';
-import KorczakInsight from './KorczakInsight';
-import SpeechButton from './SpeechButton';
+import { Brain, Star, Activity, TrendingUp, TrendingDown, Calendar } from 'lucide-react';
 
 
+/*
+// Define list of common Hebrew stop words to exclude them from the keywords extraction
+const HEBREW_STOPWORDS = new Set([
+  'את', 'של', 'על', 'עם', 'זה', 'כי', 'אני', 'הוא', 'היה', 'הם', 'אנחנו', 'לי', 'לו', 'לה', 'אם', 'או', 'גם',
+  'לא', 'כן', 'מה', 'מי', 'כדי', 'כבר', 'שלי', 'שלנו', 'אותי', 'אותו', 'אותה', 'רק', 'כל', 'עוד', 'כמו',
+  'אחרי', 'לפני', 'טוב', 'מאוד', 'יותר', 'אבל', 'אפילו', 'אז', 'שוב', 'בגלל', 'בשביל', 'דבר', 'יום', 'בית',
+  'זמן', 'משהו', 'פשוט', 'רוצה', 'יכול', 'צריך', 'עושה', 'חשבתי', 'מרגיש', 'מרגישה', 'היום', 'עכשיו',
+  'ככה', 'אחר', 'דברים', 'שם', 'פה', 'כמה', 'זאת', 'אלה', 'אלו', 'בין', 'תוך', 'לגבי', 'אשר', 'כך', 'היא',
+  'הן', 'היית', 'הייתי', 'היינו', 'היו', 'היה', 'תהיה', 'יהיה', 'שלך', 'שלהם', 'שלהן', 'שלנו',
+  'לנו', 'לכם', 'לכן', 'להם', 'להן', 'בי', 'בו', 'בה', 'בנו', 'בכם', 'בכן', 'בהם', 'בהן', 'לי', 'לך', 'לו',
+  'לה', 'לנו', 'לכם', 'לכן', 'להם', 'להן', 'אלי', 'אליך', 'אליו', 'אליה', 'אלינו', 'אליכם', 'אליכן', 'אליהם', 'אליהן',
+  'כלומר', 'אולי', 'אכן', 'אך', 'אבל', 'ברם', 'רק', 'אלא', 'בייחוד', 'במיוחד', 'למשל', 'כגון', 'הווי אומר',
+  'היינו', 'כלומר', 'דהיינו', 'זאת אומרת', 'מפני', 'משום', 'בגלל', 'כיוון', 'הואיל', 'היות', 'מאחר', 'היות ש',
+  'מאחר ש', 'היות ו', 'מפני ש', 'משום ש', 'בגלל ש', 'כיוון ש', 'הואיל ו', 'לכן', 'על כן', 'אי לכך',
+  'לפיכך', 'עקב כך', 'כתוצאה מכך', 'בעקבות זאת', 'מכאן ש', 'משמע ש', 'זאת ועוד', 'יתרה מזו', 'יתר על כן',
+  'בנוסף לכך', 'כמו כן', 'כמו ש', 'כשם ש', 'בדומה ל', 'בניגוד ל', 'להפך', 'אדרבה', 'מאידך', 'מאידך גיסא',
+  'מצד אחד', 'מצד שני', 'לעומת זאת', 'אף על פי', 'למרות', 'אף ש', 'למרות ש', 'אף על פי ש', 'עם זאת',
+  'בכל זאת', 'איך', 'כיצד', 'מתי', 'איפה', 'היכן', 'לאן', 'מאין', 'מדוע', 'למה', 'כמה', 'מי', 'מה', 'איזה',
+  'איזו', 'אילו', 'באיזה', 'באיזו', 'באילו', 'למי', 'למה', 'במה', 'כמה', 'בכמה', 'מתי', 'מאז', 'עד מתי'
+]);
+
+function cleanHebrewWord(word: string): string {
+  let cleaned = word.trim();
+  if (cleaned.length > 3 && cleaned.startsWith('ו')) {
+    cleaned = cleaned.substring(1);
+  }
+  if (cleaned.length > 3 && cleaned.startsWith('ה')) {
+    cleaned = cleaned.substring(1);
+  }
+  return cleaned;
+}
+*/
 
 export default function DashboardTab() {
-  const { entries, operatingManual, shadowWork, advices } = useAppStore();
-  const [isManualExpanded, setIsManualExpanded] = useState(false);
-  const [isGapExpanded, setIsGapExpanded] = useState(false);
-  const [isAdvicesExpanded, setIsAdvicesExpanded] = useState(false);
+  const { entries } = useAppStore();
 
   // 1. Filter entries to last 30 days
   const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
@@ -32,6 +57,50 @@ export default function DashboardTab() {
   }));
   const topTopics = Object.entries(topicsMap).sort((a, b) => b[1] - a[1]).slice(0, 8); // Take top 8 for bar chart
 
+  // 4. Top Keywords (Last 30 days) - Pie Chart Data (Only hashtags #)
+  const keywordsMap: Record<string, number> = {};
+  recentEntries30Days.forEach(e => {
+    // Count ONLY topics/tags prefixed with '#'
+    (e.topics || []).forEach(t => {
+      const trimmed = t.trim();
+      if (trimmed.length > 0) {
+        const tag = `#${trimmed}`;
+        keywordsMap[tag] = (keywordsMap[tag] || 0) + 1;
+      }
+    });
+  });
+  const topKeywords = Object.entries(keywordsMap)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8); // Take top 8 keywords for pie chart
+
+  // Calculate Weekly Average and Trend
+  const totalEntries = entries.length;
+  let weeklyAverage = 0;
+  let trend: 'up' | 'down' | 'static' = 'static';
+  
+  if (totalEntries > 0) {
+    const timestamps = entries.map(e => e.timestamp);
+    const minTimestamp = Math.min(...timestamps);
+    const timespanMs = Date.now() - minTimestamp;
+    const totalWeeks = Math.max(1, timespanMs / (7 * 24 * 60 * 60 * 1000));
+    weeklyAverage = totalEntries / totalWeeks;
+  }
+  
+  const lastWeekEntriesCount = entries.filter(
+    e => Date.now() - e.timestamp <= 7 * 24 * 60 * 60 * 1000
+  ).length;
+
+  const diff = lastWeekEntriesCount - weeklyAverage;
+  if (weeklyAverage === 0) {
+    trend = 'static';
+  } else if (Math.abs(diff) < 0.3) {
+    trend = 'static';
+  } else if (diff > 0) {
+    trend = 'up';
+  } else {
+    trend = 'down';
+  }
+
 
 
   return (
@@ -46,6 +115,67 @@ export default function DashboardTab() {
         <span className="text-[10px] text-white/40 border border-white/10 px-2 py-1 rounded-full bg-white/5">
           30 ימים אחרונים
         </span>
+      </div>
+
+      {/* 0. Key Metrics Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Metric 1: Total Entries */}
+        <div className="bg-white/10 backdrop-blur-xl border border-white/10 rounded-[2.5rem] p-6 shadow-xl relative overflow-hidden flex items-center justify-between">
+          <div className="absolute top-0 right-0 w-24 h-24 bg-white/5 blur-2xl -mr-12 -mt-12 pointer-events-none" />
+          <div className="flex flex-col space-y-1">
+            <span className="text-xs text-white/50">סה"כ כניסות יומן</span>
+            <span className="text-3xl font-extrabold text-white font-sans">{totalEntries}</span>
+            <span className="text-[10px] text-white/40">מתחילת הפעילות במערכת</span>
+          </div>
+          <div className="w-12 h-12 rounded-2xl bg-white/10 flex items-center justify-center text-white/80 shrink-0">
+            <Calendar size={22} />
+          </div>
+        </div>
+
+        {/* Metric 2: Weekly Average & Trend */}
+        <div className="bg-white/10 backdrop-blur-xl border border-white/10 rounded-[2.5rem] p-6 shadow-xl relative overflow-hidden flex items-center justify-between">
+          <div className="absolute top-0 right-0 w-24 h-24 bg-white/5 blur-2xl -mr-12 -mt-12 pointer-events-none" />
+          <div className="flex flex-col space-y-1.5">
+            <span className="text-xs text-white/50">ממוצע כניסות שבועי</span>
+            <div className="flex items-baseline gap-2">
+              <span className="text-3xl font-extrabold text-white font-sans">
+                {weeklyAverage.toFixed(1)}
+              </span>
+              <span className="text-xs text-white/60">כניסות לשבוע</span>
+            </div>
+            
+            {/* Trend Badge */}
+            <div className="flex items-center gap-1.5 mt-0.5">
+              {trend === 'up' && (
+                <div className="flex items-center gap-1 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                  <TrendingUp size={12} className="shrink-0" />
+                  <span>עלייה בשבוע האחרון ({lastWeekEntriesCount} כניסות)</span>
+                </div>
+              )}
+              {trend === 'down' && (
+                <div className="flex items-center gap-1 bg-rose-500/20 text-rose-300 border border-rose-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                  <TrendingDown size={12} className="shrink-0" />
+                  <span>ירידה בשבוע האחרון ({lastWeekEntriesCount} כניסות)</span>
+                </div>
+              )}
+              {trend === 'static' && (
+                <div className="flex items-center gap-1 bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                  <Activity size={12} className="shrink-0" />
+                  <span>פעילות יציבה ({lastWeekEntriesCount} כניסות)</span>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="w-12 h-12 rounded-2xl bg-white/10 flex items-center justify-center text-white/80 shrink-0">
+            {trend === 'up' ? (
+              <div className="text-emerald-400"><TrendingUp size={22} /></div>
+            ) : trend === 'down' ? (
+              <div className="text-rose-400"><TrendingDown size={22} /></div>
+            ) : (
+              <div className="text-blue-400"><Activity size={22} /></div>
+            )}
+          </div>
+        </div>
       </div>
 
 
@@ -140,190 +270,95 @@ export default function DashboardTab() {
         </div>
       </section>
 
-
-
-      {/* 2. Korczak Insights Section */}
-      <section className="shrink-0 bg-white/10 backdrop-blur-xl border border-white/10 rounded-[2.5rem] shadow-xl overflow-hidden transition-all">
-        <KorczakInsight />
-      </section>
-
-      {/* 3. Operating Manual Section */}
-      <section className="shrink-0 bg-[#0D3B66]/40 backdrop-blur-3xl border border-white/10 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all relative group">
-        <div className="absolute top-0 right-0 w-40 h-40 bg-[#FFD54F]/5 blur-3xl -mr-20 -mt-20 pointer-events-none" />
+      {/* 2. Top Keywords Section - Donut Pie Chart */}
+      <section className="shrink-0 bg-white/10 backdrop-blur-xl border border-white/10 rounded-[2.5rem] p-6 shadow-xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-32 h-32 bg-[#4FC3F7]/5 blur-3xl -mr-16 -mt-16 pointer-events-none" />
         
-        <button 
-          onClick={() => setIsManualExpanded(!isManualExpanded)}
-          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors relative z-10"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-[#FFD54F]/20 flex items-center justify-center text-[#FFD54F]">
-              <Notebook size={22} />
-            </div>
-            <div className="text-right">
-              <span className="block font-bold text-white text-sm">ספר ההפעלה שלי</span>
-              <span className="block text-[10px] text-white/20 uppercase mt-0.5 tracking-widest">מבוסס חודש אחרון</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-3 text-white/30">
-            {operatingManual?.insight && <SpeechButton text={operatingManual.insight} />}
-            {isManualExpanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-          </div>
-        </button>
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="text-sm font-bold text-white/90 flex items-center gap-2">
+            <Brain size={16} className="text-[#4FC3F7]" />
+            פילוג תגיות מפתח מובילות (#)
+          </h3>
+          <span className="text-[10px] text-white/40 uppercase tracking-widest leading-none">תדירות</span>
+        </div>
 
-        {isManualExpanded && (
-          <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2">
-            {!operatingManual?.insight ? (
-              <div className="py-10 flex flex-col items-center text-center space-y-4">
-                <Brain size={40} className="text-white/10" strokeWidth={1} />
-                <p className="text-sm text-white/40 italic">הדפוסים שלך מתגבשים ברגעים אלו...</p>
-              </div>
-            ) : (
-              <div className="space-y-6">
-                <div className="text-sm text-white/80 leading-relaxed max-h-[400px] overflow-y-auto pr-2 custom-scrollbar space-y-4">
-                  {operatingManual.insight.split('\n').filter(l => l.trim()).map((line, i) => {
-                    const isHeader = /^\d+\./.test(line.trim());
-                    if (isHeader) return <h4 key={i} className="text-md font-bold text-[#FFD54F] mt-4">{line}</h4>;
-                    return (
-                      <p key={i} className={cn(
-                        "opacity-80",
-                        line.trim().startsWith('*') || line.trim().startsWith('-') ? "pr-4 relative before:content-['•'] before:absolute before:right-0 before:text-[#FFD54F]/60" : ""
-                      )}>
-                        {line.replace(/^(\*|-)\s*/, '')}
-                      </p>
-                    );
-                  })}
+        <div className="flex flex-col md:flex-row items-center gap-8 px-2">
+          {topKeywords.length === 0 ? (
+             <div className="w-full h-40 flex items-center justify-center text-white/30 text-xs italic">אין מספיק תגיות לחישוב פילוג...</div>
+          ) : (() => {
+            const totalCount = topKeywords.reduce((sum, [, count]) => sum + count, 0);
+            const colors = [
+              '#4FC3F7', '#81C784', '#BA68C8', '#FF8A65',
+              '#4DB6AC', '#7986CB', '#D4E157', '#FFD54F'
+            ];
+            
+            let cumulativePercent = 0;
+            const slices = topKeywords.map(([keyword, count], i) => {
+              const percent = (count / totalCount) * 100;
+              const startPercent = cumulativePercent;
+              cumulativePercent += percent;
+              return { keyword, count, percent, color: colors[i % colors.length], startPercent };
+            });
+
+            return (
+              <>
+                {/* SVG Donut Chart */}
+                <div className="relative w-40 h-40 flex-shrink-0 animate-in zoom-in duration-700">
+                  <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90 transform origin-center drop-shadow-lg">
+                    {slices.map((slice, i) => {
+                      const radius = 40;
+                      const circumference = 2 * Math.PI * radius;
+                      const offset = circumference - (slice.percent / 100) * circumference;
+                      const rotation = (slice.startPercent / 100) * 360;
+                      
+                      return (
+                        <circle
+                          key={i}
+                          cx="50"
+                          cy="50"
+                          r={radius}
+                          fill="transparent"
+                          stroke={slice.color}
+                          strokeWidth="12"
+                          strokeDasharray={circumference}
+                          strokeDashoffset={offset}
+                          transform={`rotate(${rotation} 50 50)`}
+                          strokeLinecap={slice.percent > 2 ? "round" : "butt"}
+                          className="transition-all duration-1000 ease-out hover:opacity-80 cursor-pointer"
+                        />
+                      );
+                    })}
+                  </svg>
+                  {/* Center Content */}
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                    <span className="text-[10px] text-white/40 uppercase tracking-tight">סה"כ תגיות</span>
+                    <span className="text-xl font-bold text-white leading-none">{totalCount}</span>
+                  </div>
                 </div>
-                <div className="pt-4 border-t border-white/10 flex items-center justify-between">
-                  <span className="text-[9px] text-white/20 uppercase tracking-[0.3em]">נכתב ע"י בינה מלאכותית</span>
-                  <span className="text-[10px] text-white/40 font-mono">
-                    עדכון אחרון: {new Date(operatingManual.lastDate!).toLocaleDateString('he-IL')}
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </section>
 
-      {/* 4. Execution Gap / Critical Review Section */}
-      <section className="shrink-0 bg-white/10 backdrop-blur-xl border border-white/10 rounded-[2.5rem] overflow-hidden shadow-xl transition-all relative group">
-        <button 
-          onClick={() => setIsGapExpanded(!isGapExpanded)}
-          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors relative z-10 text-right"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-red-400/20 flex items-center justify-center text-red-400">
-              <Activity size={22} />
-            </div>
-            <div className="text-right">
-              <span className="block font-bold text-white text-sm">פער הביצוע (Shadow Work)</span>
-              <span className="block text-[10px] text-white/20 uppercase mt-0.5 tracking-widest">משימות מול מציאות</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-3 text-white/30">
-            {shadowWork?.insight && <SpeechButton text={shadowWork.insight} />}
-            {isGapExpanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-          </div>
-        </button>
-
-        {isGapExpanded && (
-          <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2">
-            {!shadowWork?.insight ? (
-              <div className="py-6 flex flex-col items-center text-center space-y-4">
-                <Activity size={32} className="text-white/10 animate-pulse" />
-                <p className="text-xs text-white/40 italic">ה-AI מנתח פערים בין התוכניות שלך לביצוע בפועל...</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="text-sm text-white/80 leading-relaxed max-h-[300px] overflow-y-auto pr-2 custom-scrollbar space-y-3">
-                  {shadowWork.insight.split('\n').filter(l => l.trim()).map((line, i) => (
-                    <p key={i} className={cn(
-                      "opacity-80 pb-2 border-b border-white/5 last:border-0",
-                      line.trim().startsWith('*') || line.trim().startsWith('-') ? "pr-4 relative before:content-['•'] before:absolute before:right-0 before:text-red-400/60" : ""
-                    )}>
-                      {line.replace(/^(\*|-)\s*/, '')}
-                    </p>
+                {/* Legend List */}
+                <div className="flex-1 w-full grid grid-cols-2 gap-x-4 gap-y-3 mt-4 md:mt-0">
+                  {slices.map((slice, i) => (
+                    <div key={i} className="flex items-center gap-2 group transition-all">
+                      <div 
+                        className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" 
+                        style={{ backgroundColor: slice.color }} 
+                      />
+                      <div className="flex flex-col min-w-0">
+                        <span className="text-[10px] font-bold text-white/90 truncate group-hover:text-white" title={slice.keyword}>
+                          {slice.keyword}
+                        </span>
+                        <span className="text-[9px] text-white/40 font-mono">
+                          {slice.count} מופעים ({Math.round(slice.percent)}%)
+                        </span>
+                      </div>
+                    </div>
                   ))}
                 </div>
-                <div className="pt-2 border-t border-white/10 flex items-center justify-between">
-                  <span className="text-[9px] text-white/20 uppercase tracking-[0.3em]">ניתוח ביקורתי (Shadow Review)</span>
-                  <span className="text-[10px] text-white/40 font-mono">
-                    עדכון אחרון: {new Date(shadowWork.lastDate!).toLocaleDateString('he-IL')}
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </section>
-
-      {/* 5. AI Advices Section */}
-      <section className="shrink-0 bg-white/10 backdrop-blur-xl border border-white/10 rounded-[2.5rem] overflow-hidden shadow-xl transition-all relative group">
-        <button 
-          onClick={() => setIsAdvicesExpanded(!isAdvicesExpanded)}
-          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors relative z-10 text-right"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-blue-400/20 flex items-center justify-center text-blue-400">
-              <Lightbulb size={22} />
-            </div>
-            <div className="text-right">
-              <span className="block font-bold text-white text-sm">העצות שלי מה-AI</span>
-              <span className="block text-[10px] text-white/20 uppercase mt-0.5 tracking-widest">עבודה, משפחה, רווחה נפשית</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-3 text-white/30">
-            {isAdvicesExpanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-          </div>
-        </button>
-
-        {isAdvicesExpanded && (
-          <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2">
-            {(!advices?.history || advices.history.length === 0) ? (
-              <div className="py-6 flex flex-col items-center text-center space-y-4">
-                <Lightbulb size={32} className="text-white/10 animate-pulse" />
-                <p className="text-xs text-white/40 italic">ה-AI אוסף נתונים ומכין עצות רלוונטיות עבורך...</p>
-              </div>
-            ) : (
-              <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-                {advices.history.map((adv, idx) => (
-                  <div key={idx} className="bg-white/5 rounded-2xl p-4 border border-white/10 space-y-4">
-                    <div className="flex items-center justify-between border-b border-white/10 pb-2 mb-2">
-                      <span className="text-[10px] text-white/40 font-mono">
-                        {new Date(adv.timestamp).toLocaleDateString('he-IL')}
-                      </span>
-                      {idx === 0 && <span className="text-[9px] bg-[#FFD54F]/20 text-[#FFD54F] px-2 py-0.5 rounded-full font-bold tracking-widest">העדכני ביותר</span>}
-                    </div>
-
-                    <div className="flex items-start gap-3">
-                       <Briefcase size={16} className="text-[#4FC3F7] mt-0.5 shrink-0" />
-                       <div>
-                          <span className="block text-xs font-bold text-[#4FC3F7] mb-1">עבודה</span>
-                          <p className="text-sm text-white/80 leading-relaxed">{adv.work}</p>
-                       </div>
-                    </div>
-
-                    <div className="flex items-start gap-3">
-                       <Home size={16} className="text-[#81C784] mt-0.5 shrink-0" />
-                       <div>
-                          <span className="block text-xs font-bold text-[#81C784] mb-1">משפחה</span>
-                          <p className="text-sm text-white/80 leading-relaxed">{adv.family}</p>
-                       </div>
-                    </div>
-
-                    <div className="flex items-start gap-3">
-                       <Heart size={16} className="text-[#FF8A65] mt-0.5 shrink-0" />
-                       <div>
-                          <span className="block text-xs font-bold text-[#FF8A65] mb-1">רווחה נפשית</span>
-                          <p className="text-sm text-white/80 leading-relaxed">{adv.mental}</p>
-                       </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+              </>
+            );
+          })()}
+        </div>
       </section>
 
     </div>

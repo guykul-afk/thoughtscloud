@@ -2,15 +2,15 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { ProcessedSession } from './services/ai';
 
-export interface AppTask {
+export interface OpenThread {
     text: string;
-    isImportant: boolean;
+    isResolved: boolean;
 }
 
-export interface DiaryEntry extends Omit<ProcessedSession, 'tasks'> {
+export interface DiaryEntry extends Omit<ProcessedSession, 'openThreads'> {
     id: string;
     timestamp: number;
-    tasks: AppTask[];
+    openThreads: OpenThread[];
 }
 
 export interface ChatMessage {
@@ -52,6 +52,13 @@ export interface AdvicesState {
     lastEntryCount: number;
 }
 
+export interface ShadowQuickAdvicesState {
+    advices: string[];
+    lastEntryCount: number;
+    oldestIndex?: number;
+    lastUpdateDate?: string;
+}
+
 interface AppState {
     apiKey: string;
     entries: DiaryEntry[];
@@ -76,23 +83,25 @@ interface AppState {
         insight?: string;
         lastDate?: string;
     } | null;
-    korczakAnalysis: {
-        insight?: string;
-        lastDate?: string;
-    } | null;
+
     majorInsights: string[];
+    lastMajorInsightsCount: number;
     knowledgeGraph: KnowledgeGraph;
     graphInsights: {
         insight?: string;
         lastDate?: string;
     } | null;
     advices: AdvicesState | null;
+    shadowQuickAdvices: ShadowQuickAdvicesState | null;
     isGdriveConnected: boolean;
+    preferredModel?: string | null;
+    preferredApiVersion?: string | null;
     setApiKey: (key: string) => void;
     addEntry: (entry: ProcessedSession) => void;
-    clearEntries: () => void;
-    removeTask: (entryId: string, taskText: string) => void;
-    toggleTaskImportance: (entryId: string, taskText: string) => void;
+    removeEntry: (id: string) => void;
+    updateEntry: (id: string, transcript: string, topics?: string[]) => void;
+    removeThread: (entryId: string, threadText: string) => void;
+    toggleThreadResolution: (entryId: string, threadText: string) => void;
     setEntries: (entries: DiaryEntry[]) => void;
     addChatMessage: (role: 'user' | 'ai', content: string) => void;
     setChatMessages: (messages: ChatMessage[]) => void;
@@ -102,37 +111,18 @@ interface AppState {
     setShadowWork: (shadow: AppState['shadowWork']) => void;
     setDailyGtd: (gtd: AppState['dailyGtd']) => void;
     setOperatingManual: (manual: AppState['operatingManual']) => void;
-    setKorczakAnalysis: (analysis: AppState['korczakAnalysis']) => void;
+
     setMajorInsights: (insights: string[]) => void;
+    setLastMajorInsightsCount: (count: number) => void;
     addTriples: (triples: Triple[], timestamp: number) => void;
     setKnowledgeGraph: (graph: KnowledgeGraph) => void;
     setGraphInsights: (insights: AppState['graphInsights']) => void;
     setAdvices: (advices: AdvicesState) => void;
+    setShadowQuickAdvices: (advices: ShadowQuickAdvicesState) => void;
     setGdriveConnected: (connected: boolean) => void;
-    // Strava Integration
-    stravaAuth: {
-        accessToken: string | null;
-        refreshToken: string | null;
-        expiresAt: number | null;
-    } | null;
-    stravaActivities: StravaActivity[];
-    lastStravaSync: string | null; // YYYY-MM-DD
-    setStravaAuth: (auth: AppState['stravaAuth']) => void;
-    setStravaActivities: (activities: StravaActivity[]) => void;
-    setLastStravaSync: (date: string) => void;
+    setPreferredModel: (modelName: string, apiVersion: string) => void;
 }
 
-export interface StravaActivity {
-    id: number;
-    name: string;
-    sport_type: string;
-    start_date: string;
-    distance: number;
-    moving_time: number;
-    total_elevation_gain: number;
-    average_heartrate?: number;
-    suffer_score?: number;
-}
 
 
 export const useAppStore = create<AppState>()(
@@ -147,31 +137,24 @@ export const useAppStore = create<AppState>()(
             shadowWork: null,
             dailyGtd: null,
             operatingManual: null,
-            korczakAnalysis: null,
+
             majorInsights: [],
+            lastMajorInsightsCount: 0,
             knowledgeGraph: { nodes: [], edges: [] },
             graphInsights: null,
             advices: null,
+            shadowQuickAdvices: null,
             isGdriveConnected: false,
+            preferredModel: null,
+            preferredApiVersion: null,
             setApiKey: (apiKey) => set({ apiKey }),
             setGdriveConnected: (isGdriveConnected) => set({ isGdriveConnected }),
             setAdvices: (advices) => set({ advices }),
+            setShadowQuickAdvices: (shadowQuickAdvices) => set({ shadowQuickAdvices }),
+            setLastMajorInsightsCount: (lastMajorInsightsCount) => set({ lastMajorInsightsCount }),
+            setPreferredModel: (preferredModel, preferredApiVersion) => set({ preferredModel, preferredApiVersion }),
             addEntry: (entry) => set((state) => {
                 let updatedEntries = [...state.entries];
-                
-                // Process task updates
-                if (entry.taskUpdates && entry.taskUpdates.length > 0) {
-                    entry.taskUpdates.forEach(update => {
-                        updatedEntries = updatedEntries.map(e => ({
-                            ...e,
-                            tasks: e.tasks.map(t => 
-                                t.text === update.originalText 
-                                    ? { ...t, text: update.updatedText } 
-                                    : t
-                            )
-                        }));
-                    });
-                }
 
                 // Process knowledge graph triples
                 const newNodes = [...state.knowledgeGraph.nodes];
@@ -213,7 +196,7 @@ export const useAppStore = create<AppState>()(
                     id: Math.random().toString(36).slice(2, 9),
                     timestamp,
                     ...entry,
-                    tasks: entry.tasks.map(t => ({ text: t, isImportant: false }))
+                    openThreads: (entry.openThreads || []).map(t => ({ text: t, isResolved: false }))
                 };
 
                 const finalEntries = [newEntry, ...updatedEntries];
@@ -224,24 +207,50 @@ export const useAppStore = create<AppState>()(
                     knowledgeGraph: { nodes: newNodes, edges: newEdges }
                 };
             }),
-            clearEntries: () => set({ entries: [] }),
-            removeTask: (entryId, taskText) => set((state) => ({
+
+            removeEntry: (id) => set((state) => ({
+                entries: state.entries.filter(e => e.id !== id)
+            })),
+            updateEntry: (id, transcript, topics) => set((state) => ({
+                entries: state.entries.map(e => {
+                    if (e.id === id) {
+                        let finalTopics = topics ?? e.topics ?? [];
+                        
+                        // Extract hashtags from transcript and automatically add them
+                        const hashtagRegex = /#([^\s.,!?;:"'()]+)/g;
+                        const matches = [...transcript.matchAll(hashtagRegex)];
+                        const extracted = matches.map(m => m[1].trim()).filter(Boolean);
+                        
+                        if (extracted.length > 0) {
+                            const merged = [...finalTopics];
+                            extracted.forEach(tag => {
+                                if (!merged.some(t => t.toLowerCase() === tag.toLowerCase())) {
+                                    merged.push(tag);
+                                }
+                            });
+                            finalTopics = merged;
+                        }
+                        
+                        return { ...e, transcript, topics: finalTopics };
+                    }
+                    return e;
+                })
+            })),
+            removeThread: (entryId, threadText) => set((state) => ({
                 entries: state.entries.map(entry =>
                     entry.id === entryId
-                        ? { ...entry, tasks: entry.tasks.filter(t => (typeof t === 'string' ? t : t.text) !== taskText) }
+                        ? { ...entry, openThreads: (entry.openThreads || []).filter(t => t.text !== threadText) }
                         : entry
                 )
             })),
-            toggleTaskImportance: (entryId, taskText) => set((state) => ({
+            toggleThreadResolution: (entryId, threadText) => set((state) => ({
                 entries: state.entries.map(entry =>
                     entry.id === entryId
                         ? { 
                             ...entry, 
-                            tasks: entry.tasks.map(t => {
-                                const tText = typeof t === 'string' ? t : t.text;
-                                const tImportant = typeof t === 'string' ? false : t.isImportant;
-                                return tText === taskText ? { text: tText, isImportant: !tImportant } : (typeof t === 'string' ? { text: t, isImportant: false } : t);
-                            }) 
+                            openThreads: (entry.openThreads || []).map(t => 
+                                t.text === threadText ? { ...t, isResolved: !t.isResolved } : t
+                            ) 
                         }
                         : entry
                 )
@@ -257,7 +266,7 @@ export const useAppStore = create<AppState>()(
             setShadowWork: (shadowWork) => set({ shadowWork }),
             setDailyGtd: (dailyGtd) => set({ dailyGtd }),
             setOperatingManual: (operatingManual) => set({ operatingManual }),
-            setKorczakAnalysis: (korczakAnalysis) => set({ korczakAnalysis }),
+
             setMajorInsights: (majorInsights) => set({ majorInsights }),
             addTriples: (triples, timestamp) => set((state) => {
                 const newNodes = [...state.knowledgeGraph.nodes];
@@ -298,12 +307,6 @@ export const useAppStore = create<AppState>()(
             }),
             setKnowledgeGraph: (knowledgeGraph) => set({ knowledgeGraph }),
             setGraphInsights: (graphInsights) => set({ graphInsights }),
-            setStravaAuth: (stravaAuth) => set({ stravaAuth }),
-            setStravaActivities: (stravaActivities) => set({ stravaActivities }),
-            setLastStravaSync: (lastStravaSync) => set({ lastStravaSync }),
-            stravaAuth: null,
-            stravaActivities: [],
-            lastStravaSync: null,
         }),
 
         {

@@ -1,6 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getStartOfCurrentWeek } from '../utils/dateUtils';
-import { useAppStore } from '../store';
 
 // Initialize the SDK with the user-provided API key
 const getGenAI = (apiKey: string) => {
@@ -30,30 +29,64 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 
 export interface ProcessedSession {
     transcript: string;
-    tasks: string[];
-    taskUpdates?: { originalText: string; updatedText: string }[];
+    openThreads: string[];
     insights: string[];
     topics: string[];
     mood: string;
     triples: [string, string, string][];
 }
 
-// Optimized Model Selection Logic based on user's confirmed availability
+// Optimized Model Selection Logic based on current availability
 export const SUPPORTED_MODELS = [
-    { name: 'gemini-2.5-flash', version: 'v1' },
-    { name: 'gemini-2.0-flash', version: 'v1' },
-    { name: 'gemini-2.5-pro', version: 'v1' },
-    { name: 'gemini-2.0-flash-lite', version: 'v1' }
+    { name: 'gemini-2.0-flash-exp', version: 'v1beta' },
+    { name: 'gemini-2.0-flash-001', version: 'v1beta' },
+    { name: 'gemini-1.5-flash-latest', version: 'v1beta' },
+    { name: 'gemini-1.5-pro-latest', version: 'v1beta' }
 ];
 
-let activeModelName = 'gemini-2.5-flash';
-let activeApiVersion = 'v1';
-let liteModelName = 'gemini-2.0-flash-lite';
+let activeModelName = 'gemini-2.0-flash-exp';
+let activeApiVersion = 'v1beta';
+let liteModelName = 'gemini-2.0-flash-exp';
 
-export const setActiveModel = (name: string, version: string = 'v1') => {
+export const setActiveModel = (name: string, version: string = 'v1beta') => {
     activeModelName = name;
     activeApiVersion = version;
+    liteModelName = name;
 };
+
+export async function autoDiscoverModel(apiKey: string): Promise<{name: string, version: string} | null> {
+    try {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+        if (!response.ok) return null;
+        const data = await response.json();
+        const models = data.models || [];
+        const modelNames = models.map((m: any) => m.name.replace('models/', ''));
+        
+        // Priority list of models from newest/best to oldest
+        const priorityList = [
+            'gemini-3.0-flash',
+            'gemini-2.5-flash',
+            'gemini-2.0-flash',
+            'gemini-2.0-flash-001',
+            'gemini-2.0-flash-exp',
+            'gemini-1.5-flash',
+            'gemini-1.5-flash-latest',
+            'gemini-1.5-pro-latest',
+            'gemini-1.5-pro'
+        ];
+
+        for (const preferred of priorityList) {
+            if (modelNames.includes(preferred)) {
+                setActiveModel(preferred, 'v1beta');
+                console.log("Auto-discovered optimal model:", preferred);
+                return { name: preferred, version: 'v1beta' };
+            }
+        }
+    } catch (e) {
+        console.warn("Failed to auto-discover models:", e);
+    }
+    return null;
+}
 
 // Fixed context for Guy's family
 const FIXED_CONTEXT = `
@@ -66,21 +99,50 @@ const FIXED_CONTEXT = `
 
 // Helper to sanitize and parse JSON from AI response
 const parseAIResponse = (text: string): any => {
-
     try {
         // Remove markdown code blocks if present
         const cleanJson = text
             .replace(/```json/g, '')
             .replace(/```/g, '')
             .trim();
-        return JSON.parse(cleanJson);
+        
+        // Attempt 1: Direct JSON parsing
+        try {
+            return JSON.parse(cleanJson);
+        } catch (initialErr) {
+            console.warn("Direct JSON parsing failed, attempting extraction...", initialErr);
+            
+            // Attempt 2: Extract the first JSON object using a greedy regex match
+            const jsonObjectMatch = cleanJson.match(/\{[\s\S]*\}/);
+            if (jsonObjectMatch) {
+                try {
+                    return JSON.parse(jsonObjectMatch[0]);
+                } catch (objErr) {
+                    console.warn("Failed to parse extracted JSON object:", objErr);
+                }
+            }
+            
+            // Attempt 3: Extract the first JSON array using a greedy regex match
+            const jsonArrayMatch = cleanJson.match(/\[[\s\S]*\]/);
+            if (jsonArrayMatch) {
+                try {
+                    return JSON.parse(jsonArrayMatch[0]);
+                } catch (arrErr) {
+                    console.warn("Failed to parse extracted JSON array:", arrErr);
+                }
+            }
+            
+            // If all parsing attempts failed, throw the original error
+            throw initialErr;
+        }
     } catch (e) {
         console.error("Failed to parse AI response as JSON:", text);
         throw new Error("התגובה מה-AI לא הייתה בפורמט תקין. נסה שוב.");
     }
 };
 
-export async function processAudioSession(audioBlob: Blob, apiKey: string, currentOpenTasks: string[] = []): Promise<ProcessedSession> {
+
+export async function processAudioSession(audioBlob: Blob, apiKey: string, currentOpenThreads: string[] = []): Promise<ProcessedSession> {
     const genAI = getGenAI(apiKey);
     // Removed responseMimeType to fix "Unknown name" 400 error
     const model = genAI.getGenerativeModel({
@@ -96,21 +158,21 @@ export async function processAudioSession(audioBlob: Blob, apiKey: string, curre
   
   Please analyze the audio and provide exactly the following in clear, valid JSON format (do not include markdown code block syntax around the JSON):
   {
-    "transcript": "The full exact transcript. MUST BE IN HEBREW.",
-    "tasks": ["Array of NEW practical tasks or actionable items. MUST BE IN HEBREW.", ...],
-    "taskUpdates": [{"originalText": "existing task text", "updatedText": "new version"}],
+    "transcript": "The full exact transcript. MUST BE IN HEBREW. If the audio is silent, only contains noise, or has no clear speech, output exactly 'NO_SPEECH_DETECTED'. Do NOT hallucinate or invent any speech.",
+    "openThreads": ["Array of unresolved thoughts, dilemmas, or active intentions Guy wants to resolve or advance. Phrase them as a short reflective statement or question, e.g., 'איך לקדם את השיחה מול הבוס?' or 'הרצון למצוא זמן שקט לעצמי'. MUST BE IN HEBREW.", ...],
     "insights": ["Array of psychological or general insights. MUST BE IN HEBREW.", ...],
     "topics": ["Array of short tags/categories. MUST BE IN HEBREW.", ...],
     "mood": "A short description of tone/mood. MUST BE IN HEBREW.",
     "triples": [["Subject", "Relation", "Object"], ["שינה", "משפיעה על", "עבודה"]]
   }
 
-  CRITICAL RULES FOR TASKS:
-  1. INTENT CLASSIFICATION: Only create a task if you identify an ACTIVE VERB and a TIMEFRAME (e.g., "today", "tomorrow", "this week", or implied immediate action). DO NOT create tasks for purely emotional/reflective thoughts (e.g., "I feel sad").
-  2. DEDUPLICATION: Compare identified tasks with the "Current Open Tasks" list below. 
-     - If a task is already present and unchanged, ignore it.
-     - If a task is present but needs updating (e.g., more detail, new deadline), add it to "taskUpdates".
-     - If a task is fundamentally new, add it to "tasks".
+  CRITICAL HALUCINATION PREVENTION:
+  If the audio is silent or contains no meaningful speech, you MUST return empty arrays for openThreads, insights, topics, and triples, and set mood to "N/A". DO NOT invent any information, openThreads, or insights that are not explicitly present in the audio.
+
+  CRITICAL RULES FOR OPEN THREADS (חוטים פתוחים):
+  1. Focus on unresolved emotional issues, relationships, work or personal dilemmas, plans, or internal conflicts that Guy is reflecting upon.
+  2. Avoid dry list-style tasks (like "buy groceries"). Instead, capture the underlying intention or dilemma.
+  3. DEDUPLICATION: Compare identified open threads with the "Current Open Threads" list below. If a thread is already open and covers the same issue, ignore it to prevent duplicates.
 
   KNOWLEDGE GRAPH TRIPLES:
   Extract exactly 3-7 meaningful relationships as [Subject, Relation, Object].
@@ -118,8 +180,8 @@ export async function processAudioSession(audioBlob: Blob, apiKey: string, curre
   - Examples: ["טלי", "ביקשה", "להכין ארוחת ערב"], ["פרויקט X", "גורם ל", "לחץ"], ["גיא", "מרגיש", "סיפוק"].
   - Use consistent naming for the same entities.
 
-  Current Open Tasks:
-  ${currentOpenTasks.length > 0 ? currentOpenTasks.map(t => `- ${t}`).join('\n') : 'None'}
+  Current Open Threads:
+  ${currentOpenThreads.length > 0 ? currentOpenThreads.map(t => `- ${t}`).join('\n') : 'None'}
   
   CRITICAL: ALL text values MUST be in Hebrew.
   
@@ -150,7 +212,7 @@ export async function processAudioSession(audioBlob: Blob, apiKey: string, curre
     }
 }
 
-export async function processTextSession(textData: string, apiKey: string, currentOpenTasks: string[] = []): Promise<ProcessedSession> {
+export async function processTextSession(textData: string, apiKey: string, currentOpenThreads: string[] = []): Promise<ProcessedSession> {
     const genAI = getGenAI(apiKey);
     const model = genAI.getGenerativeModel({
         model: activeModelName
@@ -163,21 +225,20 @@ export async function processTextSession(textData: string, apiKey: string, curre
   
   Please analyze the text and provide exactly the following in clear, valid JSON format:
   {
-    "transcript": "The full exact text. MUST BE IN HEBREW.",
-    "tasks": ["Array of NEW practical tasks or actionable items. MUST BE IN HEBREW.", ...],
-    "taskUpdates": [{"originalText": "existing task text", "updatedText": "new version"}],
+    "openThreads": ["Array of unresolved thoughts, dilemmas, or active intentions Guy wants to resolve or advance. Phrase them as a short reflective statement or question, e.g., 'איך לקדם את השיחה מול הבוס?' or 'הרצון למצוא זמן שקט לעצמי'. MUST BE IN HEBREW.", ...],
     "insights": ["Array of psychological or general insights. MUST BE IN HEBREW.", ...],
     "topics": ["Array of short tags/categories. MUST BE IN HEBREW.", ...],
     "mood": "A short description of tone/mood. MUST BE IN HEBREW.",
     "triples": [["Subject", "Relation", "Object"], ["שינה", "משפיעה על", "עבודה"]]
   }
 
-  CRITICAL RULES FOR TASKS:
-  1. INTENT CLASSIFICATION: Only create a task if you identify an ACTIVE VERB and a TIMEFRAME (e.g., "today", "tomorrow", "this week", or implied immediate action). DO NOT create tasks for purely emotional/reflective thoughts (e.g., "I feel sad").
-  2. DEDUPLICATION: Compare identified tasks with the "Current Open Tasks" list below. 
-     - If a task is already present and unchanged, ignore it.
-     - If a task is present but needs updating (e.g., more detail, new deadline), add it to "taskUpdates".
-     - If a task is fundamentally new, add it to "tasks".
+  CRITICAL HALUCINATION PREVENTION:
+  If the text is too short, meaningless, or contains no actionable/insightful information, you MUST return empty arrays for openThreads, insights, topics, and triples, and set mood to "N/A". DO NOT invent any information, openThreads, or insights that are not explicitly present in the text.
+
+  CRITICAL RULES FOR OPEN THREADS (חוטים פתוחים):
+  1. Focus on unresolved emotional issues, relationships, work or personal dilemmas, plans, or internal conflicts that Guy is reflecting upon.
+  2. Avoid dry list-style tasks (like "buy groceries"). Instead, capture the underlying intention or dilemma.
+  3. DEDUPLICATION: Compare identified open threads with the "Current Open Threads" list below. If a thread is already open and covers the same issue, ignore it to prevent duplicates.
 
   KNOWLEDGE GRAPH TRIPLES:
   Extract exactly 3-7 meaningful relationships as [Subject, Relation, Object].
@@ -185,8 +246,8 @@ export async function processTextSession(textData: string, apiKey: string, curre
   - Examples: ["טלי", "ביקשה", "להכין ארוחת ערב"], ["פרויקט X", "גורם ל", "לחץ"], ["גיא", "מרגיש", "סיפוק"].
   - Use consistent naming for the same entities.
 
-  Current Open Tasks:
-  ${currentOpenTasks.length > 0 ? currentOpenTasks.map(t => `- ${t}`).join('\n') : 'None'}
+  Current Open Threads:
+  ${currentOpenThreads.length > 0 ? currentOpenThreads.map(t => `- ${t}`).join('\n') : 'None'}
 
   CRITICAL: ALL text values MUST be in Hebrew. Supporting and personal tone.
 
@@ -201,7 +262,10 @@ export async function processTextSession(textData: string, apiKey: string, curre
     try {
         const result = await model.generateContent(prompt);
         const response = await result.response;
-        return parseAIResponse(response.text());
+        const parsed = parseAIResponse(response.text());
+        // Since we removed transcript from the AI prompt to prevent hallucination, we inject the original text back here.
+        parsed.transcript = textData;
+        return parsed;
 
     } catch (error: any) {
         console.error("Error processing text with Gemini:", error);
@@ -221,7 +285,6 @@ export async function queryInsights(
     context?: { 
         weeklyInsight?: string; 
         categoricalInsights?: { work: string; family: string; personal: string };
-        korczakAnalysis?: string;
         chatHistory?: ChatMessageContext[];
     }
 ): Promise<string> {
@@ -241,22 +304,10 @@ export async function queryInsights(
             contextData += `\n[תובנת משפחה]: ${context.categoricalInsights.family}`;
             contextData += `\n[תובנה אישית]: ${context.categoricalInsights.personal}\n`;
         }
-        if (context.korczakAnalysis) {
-            contextData += `\n[ניתוח לפי "זמן לעשרה עניינים" של קורצ'ק]: ${context.korczakAnalysis}\n`;
-        }
         if (context.chatHistory && context.chatHistory.length > 0) {
             contextData += `\n[היסטוריית שיחה אחרונה]:\n`;
             contextData += context.chatHistory.slice(-10).map(m => 
                 `${m.role === 'user' ? 'גיא שאל' : 'אתה ענית'}: ${m.content}`
-            ).join('\n');
-            contextData += `\n`;
-        }
-        // Strava activities context
-        const { stravaActivities } = useAppStore.getState();
-        if (stravaActivities && stravaActivities.length > 0) {
-            contextData += `\n[נתוני אימון מ-Strava (פעילות גופנית)]: \n`;
-            contextData += stravaActivities.slice(0, 5).map((a: any) => 
-                `- ${new Date(a.start_date).toLocaleDateString('he-IL')}: ${a.name} (${a.sport_type}), מרחק: ${(a.distance/1000).toFixed(2)} ק"מ, זמן: ${Math.floor(a.moving_time/60)} דקות${a.average_heartrate ? `, דופק ממוצע: ${a.average_heartrate}` : ''}`
             ).join('\n');
             contextData += `\n`;
         }
@@ -281,12 +332,12 @@ export async function queryInsights(
   
   ${contextData ? `להלן התובנות הנוכחיות שלך כהקשר נוסף:\n${contextData}` : ""}
   
- 
+  
 
   Here are all of Guy's past transcripts with their recorded dates:
   ${recentEntriesForQuery.map((e) => `[Entry Date: ${new Date(e.timestamp).toLocaleString('he-IL', { dateStyle: 'medium', timeStyle: 'short' })}]: ${e.transcript}`).join('\n\n')}
   
- 
+  
 
   Please provide a helpful, deep, and insightful answer to Guy's question based on the transcripts and context provided above. 
   CRITICAL: Answer MUST be in fluent Hebrew. If the answer is not in the material, state that gently in Hebrew, addressing the user in second person.
@@ -415,6 +466,102 @@ export async function generateCategoricalInsights(allEntries: { transcript: stri
     }
 }
 
+export async function generateShadowQuickAdvices(shadowWorkInsight: string, allEntries: { transcript: string; timestamp: number }[], apiKey: string): Promise<string[]> {
+    const genAI = getGenAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
+
+    const fourteenDaysAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
+    const recentTranscripts = allEntries
+        .filter(e => e.timestamp >= fourteenDaysAgo)
+        .map(e => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`)
+        .join('\n\n');
+
+    if (!shadowWorkInsight) {
+        return ["אין מספיק נתוני עבודת צללים (Shadow Work) זמינים עדיין כדי לייצר עצות."];
+    }
+
+    const prompt = `
+  אתה פסיכולוג ומומחה עבודת צללים של "גיא". 
+  לפניך סיכום נקודת העבודה הנוכחית של גיא מתוך ניתוח עבודת הצללים (Shadow Work) שלו:
+  "${shadowWorkInsight}"
+
+  קח בחשבון את הסיכום הזה ואת היומנים מהשבועיים האחרונים, וצור בדיוק 5 עצות קצרות ומהירות להתמודדות מעשית.
+  
+  דרישות:
+  - כל עצה חייבת להיות בין משפט אחד לשניים בלבד.
+  - פנה ישירות לגיא בגוף שני ("אתה", "כדאי ש...").
+  - התמקד ביישום יומיומי קצר ומיידי שיכול לעזור לו עם הפער שתואר בעבודת הצללים.
+  - החזר תשובה בפורמט JSON בלבד. המבנה חייב להיות מערך של 5 מחרוזות. (לדוגמה: ["עצה 1", "עצה 2", "עצה 3", "עצה 4", "עצה 5"]). ללא שום טקסט נוסף לפני או אחרי עטיפת ה-JSON.
+
+  היומנים מהשבועיים האחרונים:
+  ${recentTranscripts}
+  `;
+
+    try {
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        return parseAIResponse(response.text());
+    } catch (error: any) {
+        console.error("Error generating shadow quick advices:", error);
+        return [
+            "שגיאה ביצירת עצות המבוססות על עבודת צללים."
+        ];
+    }
+}
+
+export async function generateSingleShadowQuickAdvice(shadowWorkInsight: string, allEntries: { transcript: string; timestamp: number }[], existingAdvices: string[], apiKey: string): Promise<string> {
+    const genAI = getGenAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
+
+    const fourteenDaysAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
+    const recentTranscripts = allEntries
+        .filter(e => e.timestamp >= fourteenDaysAgo)
+        .map(e => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`)
+        .join('\n\n');
+
+    if (!shadowWorkInsight) {
+        return "אין מספיק נתוני עבודת צללים זמינים כרגע כדי לייצר עצה חדשה.";
+    }
+
+    const existingListStr = existingAdvices.map((a, i) => `${i + 1}. ${a}`).join('\n');
+
+    const prompt = `
+  אתה פסיכולוג ומומחה עבודת צללים של "גיא". 
+  לפניך סיכום נקודת העבודה הנוכחית של גיא מתוך ניתוח עבודת הצללים (Shadow Work) שלו:
+  "${shadowWorkInsight}"
+
+  קח בחשבון את הסיכום הזה ואת היומנים מהשבועיים האחרונים.
+  כמו כן, לפניך העצות המהירות הקיימות כרגע ברשימה שלו:
+  ${existingListStr}
+
+  צור עצה מהירה אחת חדשה לגמרי להתמודדות מעשית, שתחליף את העצה הכי פחות רלוונטית או הכי ותיקה שלו.
+  העצה החדשה חייבת להיות שונה מכל העצות הקיימות ברשימה!
+  
+  דרישות:
+  - העצה חייבת להיות בין משפט אחד לשניים בלבד.
+  - פנה ישירות לגיא בגוף שני ("אתה", "כדאי ש...").
+  - התמקד ביישום יומיומי קצר ומיידי שיכול לעזור לו עם הפער שתואר בעבודת הצללים.
+  - החזר תשובה בפורמט JSON בלבד. המבנה חייב להיות אובייקט עם שדה "advice" המכיל את מחרוזת העצה. (לדוגמה: {"advice": "עצה חדשה..."}). ללא שום טקסט נוסף לפני או אחרי עטיפת ה-JSON.
+
+  היומנים מהשבועיים האחרונים:
+  ${recentTranscripts}
+  `;
+
+    try {
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const parsed = parseAIResponse(response.text());
+        if (typeof parsed === 'object' && parsed !== null) {
+            if (parsed.advice) return parsed.advice;
+            if (Array.isArray(parsed)) return parsed[0];
+        }
+        return typeof parsed === 'string' ? parsed : response.text().trim();
+    } catch (error: any) {
+        console.error("Error generating single shadow quick advice:", error);
+        return "זהה רגש אחד חסום היום ותן לו ביטוי בכתיבה של שתי דקות.";
+    }
+}
+
 export async function generateAdvices(allEntries: { transcript: string; timestamp: number }[], apiKey: string): Promise<{ work: string; family: string; mental: string }> {
     const genAI = getGenAI(apiKey);
     const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
@@ -482,19 +629,12 @@ export async function generateLifeThemesAnalysis(allEntries: { transcript: strin
         .map(e => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`)
         .join('\n\n');
 
-    // Add Strava context for themes
-    const { stravaActivities } = useAppStore.getState();
-    const workoutContext = stravaActivities.slice(0, 10)
-        .map(a => `- ${new Date(a.start_date).toLocaleDateString('he-IL')}: ${a.name} (${a.sport_type})`)
-        .join('\n');
 
     const prompt = `
   אתה אנליסט דפוסים אישי ומומחה בפסיכולוגיה של "תמות חיים" (Life Themes).
   המשימה שלך: לנתח את המחשבות של גיא ${timeRangeText} ולזהות 2-3 "תמות על" - נושאים מרכזיים שחוזרים על עצמם, גם אם בדרכים שונות.
   בנוסף, השווה את התמות האלו למה שאתה מזהה כ"עבר רחוק יותר" (מתוך כלל החומר) וציין אם יש שינוי, התקדמות או נסיגה.
 
-  נתוני אימון (להקשר פיזי):
-  ${workoutContext || "אין נתוני אימון"}
 
   דרישות:
   - פנה למשתמש ישירות בגוף שני ("אתה").
@@ -613,7 +753,7 @@ export async function generateOperatingManual(allEntries: { transcript: string; 
         .join('\n\n');
 
     const prompt = `
-  אתה מומחה לניתוח דפוסי התנהגות ופסיכולוגיה קוגניטיבית. המטרה שלך היא לכתוב את "ספר ההפעלה" (Personal Operating Manual) של גיא.
+  אתה מומחה לניתוח דפוסי התנהגות ופסיכולוגיה קוגניטיבית. המטרה שלך היא לכתוב את "ספר ההפעלה" (Personal Operating Manual) of גיא.
   זהו מסמך פרקטי שמרכז את התובנות העמוקות ביותר על איך גיא "עובד" הכי טוב, מה מניע אותו, ומה עוצר אותו.
   עליך לפעול כ"פרקליט השטן" מול דפוסים מתחמקים או סתירות פנימיות. זהה איפה גיא משקר לעצמו לאורך זמן ומה הסתירות הקבועות בהתנהגותו.
 
@@ -645,66 +785,7 @@ export async function generateOperatingManual(allEntries: { transcript: string; 
         throw error;
     }
 }
-const KORCZAK_TEN_MATTERS = `
-קח לך זמן לעבודה – זה המחיר להצלחתך
-קח לך זמן לחשיבה – זה מחיר הכוח שלך
-קח לך זמן למשחקים – זה סוד הנעורים שלך
-קח לך זמן לקריאה – זה בסיס הידע שלך
-קח לך זמן לשלווה – זה מסייע לך לשטוף את האבק מעיניך
-קח לך זמן לחברות ולידידים – זהו מעיין האושר שלך
-קח לך זמן לאחוות האדם – זה יבטיח לך את התרומות לזולתך
-קח לך זמן לצחוק ולשובבות – זה יקל עליך את מעמסת החיים
-קח לך זמן לחלומות – זה ימשוך את נפשך אלי הכוכבים
-קח לך זמן לתכנון
-ואז תהיה לך אפשרות לבצע את כל האחרים.
-`;
 
-export async function generateKorczakAnalysis(allEntries: { transcript: string; timestamp: number }[], apiKey: string): Promise<string> {
-    const genAI = getGenAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
-
-    const weekStart = getStartOfCurrentWeek();
-    const recentTranscripts = allEntries
-        .filter(e => e.timestamp >= weekStart)
-        .map(e => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`)
-        .join('\n\n');
-
-    if (!recentTranscripts) return "אין מספיק נתונים מהשבוע האחרון לביצוע ניתוח לפי 'זמן לעשרה עניינים'.";
-
-    const prompt = `
-  אתה מומחה לניהול זמן וצמיחה אישית, המשתמש בטקסט "זמן לעשרה עניינים" של יאנוש קורצ'ק כמודל להערכת איכות החיים והזמן של גיא.
-  
-  הנה הטקסט של קורצ'ק:
-  ${KORCZAK_TEN_MATTERS}
-
-  המשימה שלך:
-  1. נתח את התיעודים של גיא מהשבוע האחרון.
-  2. הערך איך הוא עמד בכל אחד מ-10 הסעיפים של קורצ'ק.
-  3. ספק לגיא משוב מעמיק, אישי וחם (בעברית) על חלוקת הזמן שלו.
-  4. זהה איפה הוא מצליח ואיפה חסר לו זמן (למשל, אולי הוא משקיע המון בעבודה אך מזניח את ה"שלווה" או את ה"חלומות").
-  5. הצע לו 2-3 פעולות פרקטיות וקטנות לשבוע הבא כדי לאזן את חלוקת הזמן שלו לפי המודל.
-
-  דרישות:
-  - פנה למשתמש ישירות בגוף שני ("אתה").
-  - כתוב בעברית קולחת ומעוררת השראה.
-  - השתמש בבולטים ברורים.
-  
-  החומר לניתוח מהשבוע האחרון:
-  ${recentTranscripts}
-
-  הקשר קבוע לגבי בני משפחה:
-  ${FIXED_CONTEXT}
-  `;
-
-    try {
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        return response.text() || "לא הצלחתי לייצר ניתוח לפי קורצ'ק.";
-    } catch (error) {
-        console.error("Error generating Korczak analysis:", error);
-        throw error;
-    }
-}
 
 
 export async function generateMajorInsights(
