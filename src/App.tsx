@@ -10,6 +10,7 @@ import {
   Brain,
   Notebook,
   Loader2,
+  RefreshCw,
   Trash2,
   Square,
   X,
@@ -28,7 +29,7 @@ import {
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { useAppStore } from './store';
+import { useAppStore, type DiaryEntry } from './store';
 import {
   queryInsights,
   generateWeeklyBriefing,
@@ -40,8 +41,7 @@ import {
 
   generateMajorInsights,
   generateAdvices,
-  generateShadowQuickAdvices,
-  generateSingleShadowQuickAdvice,
+  generateQuoteInsight,
   processAudioSession,
   processTextSession,
   SUPPORTED_MODELS,
@@ -49,7 +49,10 @@ import {
   autoDiscoverModel
 } from './services/ai';
 import { GeminiLiveService, type LiveChatStatus } from './services/live-ai';
-import { loadGapi, loadGis, handleAuthClick, handleSignoutClick, setAuthChangeCallback, uploadStateToDrive, downloadStateFromDrive, forceCheckAuth, dumpStorage } from './services/drive';
+// Google Drive imports removed
+const forceCheckAuth = () => { console.log('forceCheckAuth stubbed'); };
+const dumpStorage = () => { console.log('dumpStorage stubbed'); };
+declare const gapi: any;
 import VoicePulse from './components/VoicePulse';
 import DashboardTab from './components/DashboardTab';
 import SpeechButton from './components/SpeechButton';
@@ -63,12 +66,11 @@ export function cn(...inputs: ClassValue[]) {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'actions' | 'insights' | 'dashboard' | 'history'>('home');
-  const { apiKey, setApiKey, entries, setEntries, preferredModel, preferredApiVersion, setPreferredModel } = useAppStore();
+  const { apiKey, setApiKey, entries, preferredModel, preferredApiVersion, setPreferredModel, loadInitialState, syncStatus } = useAppStore();
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [isTestingKey, setIsTestingKey] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  // Google Drive state variables removed
   const [isStandalone, setIsStandalone] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
@@ -133,177 +135,16 @@ export default function App() {
   const liveSessionTranscriptRef = useRef('');
   const liveSessionLastRoleRef = useRef('');
 
-  // Initialize Google Drive API and Viewport Height
+  // Initialize Firebase State
   useEffect(() => {
-    const initBoot = async () => {
-      console.log("TRACE: App.tsx -> Booting GAPI/GIS Sequence...");
-      try {
-        // Race condition protection for script loading
-        const timeout = setTimeout(() => {
-          console.warn("TRACE: GAPI/GIS Boot Timeout - Proceeding anyway");
-          loadGapi(); // Try one last time
-          loadGis();
-        }, 5000);
+    loadInitialState();
+  }, []);
 
-        await Promise.all([loadGapi(), loadGis()]);
-        clearTimeout(timeout);
-        console.log("TRACE: App.tsx -> GAPI/GIS Init CALLED");
-      } catch (e) {
-        console.error("TRACE: Boot Error:", e);
-      }
-    };
-    
-    initBoot();
-    
-    setAuthChangeCallback((authStatus) => {
-      console.log("TRACE: App.tsx -> Auth Callback Received:", authStatus);
-      setIsAuthenticated(authStatus);
-      if (authStatus) {
-        syncFromDrive();
-      }
-    });
-
-    // Check for existing token every 5 seconds (fallback for PWA context shifts)
-    const interval = setInterval(() => {
-      if (typeof gapi !== 'undefined' && gapi.client) {
-         const token = gapi.client.getToken();
-         if (token && !isAuthenticated) {
-            console.log("TRACE: App.tsx -> Token recovered via interval fallback.");
-            setIsAuthenticated(true);
-            syncFromDrive();
-         }
-      }
-    }, 5000);
-
-    return () => {
-      clearInterval(interval);
-    };
-  }, [isAuthenticated, entries.length]); // Re-run if entries change to detect if auth is needed
-
-  const { setGdriveConnected } = useAppStore();
-
-  useEffect(() => {
-    console.log("TRACE: App.tsx -> isAuthenticated CHANGED:", isAuthenticated);
-  }, [isAuthenticated]);
-
-  const handleAuth = () => {
-    console.log("TRACE: App.tsx -> handleAuth triggered");
-    setGdriveConnected(true);
-    handleAuthClick();
-  };
-
-  const handleSignout = () => {
-    setGdriveConnected(false);
-    handleSignoutClick();
-  };
-
-  const syncFromDrive = async () => {
-    setIsSyncing(true);
-    try {
-      const state = await downloadStateFromDrive();
-      if (state) {
-        if (state.entries && Array.isArray(state.entries)) {
-          // Merge local entries with downloaded entries by unique ID
-          const localEntries = useAppStore.getState().entries || [];
-          const mergedEntries = [...localEntries];
-          state.entries.forEach((driveEntry: any) => {
-            if (!mergedEntries.some(e => e.id === driveEntry.id)) {
-              mergedEntries.push(driveEntry);
-            }
-          });
-          // Sort by timestamp descending (newest first) to maintain chronological order
-          mergedEntries.sort((a, b) => b.timestamp - a.timestamp);
-          setEntries(mergedEntries);
-        }
-        if (state.chatMessages && Array.isArray(state.chatMessages)) {
-          // Merge local chat messages with downloaded chat messages by content & timestamp
-          const localMessages = useAppStore.getState().chatMessages || [];
-          const mergedMsgs = [...localMessages];
-          state.chatMessages.forEach((driveMsg: any) => {
-            if (!mergedMsgs.some(m => m.timestamp === driveMsg.timestamp && m.content === driveMsg.content)) {
-              mergedMsgs.push(driveMsg);
-            }
-          });
-          // Sort by timestamp ascending (chronological flow)
-          mergedMsgs.sort((a, b) => a.timestamp - b.timestamp);
-          useAppStore.getState().setChatMessages(mergedMsgs);
-        }
-        if (state.weeklyInsight) {
-          useAppStore.getState().setWeeklyInsight(state.weeklyInsight);
-        }
-        if (state.categoricalInsights) {
-          useAppStore.getState().setCategoricalInsights(state.categoricalInsights);
-        }
-        if (state.dailyGtd) {
-          useAppStore.getState().setDailyGtd(state.dailyGtd);
-        }
-        if (state.lifeThemes) {
-          useAppStore.getState().setLifeThemes(state.lifeThemes);
-        }
-        if (state.shadowWork) {
-          useAppStore.getState().setShadowWork(state.shadowWork);
-        }
-        if (state.operatingManual) {
-          useAppStore.getState().setOperatingManual(state.operatingManual);
-        }
-
-        if (state.advices) {
-          useAppStore.getState().setAdvices(state.advices);
-        }
-      }
-    } catch (e) {
-      console.error("Failed to sync from drive", e);
-    } finally {
-      setIsSyncing(false);
-    }
-  };
+  // handleAuth, handleSignout, syncFromDrive removed
 
 
 
-  // Sync to drive whenever entries or chatMessages change (with simple debounce)
-  useEffect(() => {
-    if (!isAuthenticated || isRecording || isSyncing) return; // DON'T SYNC WHILE RECORDING OR DOWNLOADING
-    const chatLen = useAppStore.getState().chatMessages.length;
-    if (entries.length === 0 && chatLen === 0) return;
-
-    const timeoutId = setTimeout(() => {
-      const currentMessages = useAppStore.getState().chatMessages;
-      setIsSyncing(true);
-      const currentState = useAppStore.getState();
-      uploadStateToDrive({
-        entries,
-        chatMessages: currentMessages,
-        weeklyInsight: currentState.weeklyInsight,
-        categoricalInsights: currentState.categoricalInsights,
-        dailyGtd: currentState.dailyGtd,
-        lifeThemes: currentState.lifeThemes,
-        shadowWork: currentState.shadowWork,
-        operatingManual: currentState.operatingManual,
-
-        advices: currentState.advices
-      })
-        .catch((err) => {
-          console.error("Sync error:", err);
-          alert("שגיאה בסנכרון מול גוגל דרייב:\n" + err.message);
-        })
-        .finally(() => setIsSyncing(false));
-    }, 2000);
-
-    return () => clearTimeout(timeoutId);
-  }, [
-    entries,
-    isAuthenticated,
-    isSyncing,
-    useAppStore.getState().chatMessages.length,
-    useAppStore.getState().weeklyInsight,
-    useAppStore.getState().categoricalInsights,
-    useAppStore.getState().dailyGtd,
-    useAppStore.getState().lifeThemes,
-    useAppStore.getState().shadowWork,
-    useAppStore.getState().operatingManual,
-
-    useAppStore.getState().advices
-  ]);
+  // syncToDrive removed
 
   // Generate Weekly Insight when entries change
   useEffect(() => {
@@ -314,9 +155,13 @@ export default function App() {
       // If we already have one and just added one entry, maybe don't re-run every time?
       // User said "updates based on new entries", so let's run it.
       try {
-        const briefing = await generateWeeklyBriefing(entries, apiKey);
-        if (briefing !== weeklyInsight) {
-          setWeeklyInsight(briefing);
+        const { knowledgeGraph, addTriples } = useAppStore.getState();
+        const result = await generateWeeklyBriefing(entries, apiKey, undefined, knowledgeGraph);
+        if (result.insight !== weeklyInsight) {
+          setWeeklyInsight(result.insight);
+        }
+        if (result.triples && result.triples.length > 0) {
+          addTriples(result.triples, Date.now());
         }
       } catch (e) {
         console.error("Failed to generate weekly briefing", e);
@@ -334,8 +179,13 @@ export default function App() {
 
     const timeoutId = setTimeout(async () => {
       try {
-        const insights = await generateCategoricalInsights(entries, apiKey);
-        setCategoricalInsights(insights);
+        const { knowledgeGraph, addTriples } = useAppStore.getState();
+        const result = await generateCategoricalInsights(entries, apiKey, knowledgeGraph);
+        const { work, family, personal, triples } = result;
+        setCategoricalInsights({ work, family, personal });
+        if (triples && triples.length > 0) {
+          addTriples(triples, Date.now());
+        }
       } catch (e) {
         console.error("Failed to generate categorical insights", e);
       }
@@ -343,6 +193,38 @@ export default function App() {
 
     return () => clearTimeout(timeoutId);
   }, [entries.length, apiKey]);
+
+  const extractedQuotes = useMemo(() => {
+    console.log('--- Extracted Quotes Diagnostic Start ---');
+    console.log('Total entries:', entries.length);
+    const result = entries.filter(entry => {
+      const hasQuoteTopic = (entry.topics || []).some(topic => {
+        if (!topic) return false;
+        const clean = topic.replace(/[\u200e\u200f\s#]/g, '').toLowerCase();
+        const match = clean.includes('ציטוט');
+        if (match) {
+          console.log(`Matched topic in entry [${entry.id}]:`, topic);
+        }
+        return match;
+      });
+
+      const normalizedTranscript = entry.transcript.replace(/[\u200e\u200f]/g, '');
+      const hasQuoteHashtag = 
+        /#ציטוט/.test(normalizedTranscript) || 
+        /#\s*ציטוט/.test(normalizedTranscript);
+
+      if (hasQuoteHashtag) {
+        console.log(`Matched hashtag in entry [${entry.id}]:`, entry.transcript.substring(0, 100));
+      }
+
+      const matched = hasQuoteTopic || hasQuoteHashtag;
+      console.log(`Entry [${entry.id}] date [${new Date(entry.timestamp).toLocaleDateString('he-IL')}]: matched = ${matched}, topics =`, entry.topics);
+      return matched;
+    });
+    console.log('Matched entries:', result.length);
+    console.log('--- Extracted Quotes Diagnostic End ---');
+    return result;
+  }, [entries]);
 
   // Advanced Insights Logic (Life Themes, Shadow Work, Emotional GTD)
   const {
@@ -353,7 +235,7 @@ export default function App() {
     majorInsights, setMajorInsights,
     lastMajorInsightsCount, setLastMajorInsightsCount,
     advices, setAdvices,
-    shadowQuickAdvices, setShadowQuickAdvices
+    quoteInsights, setQuoteInsights
   } = useAppStore();
 
   useEffect(() => {
@@ -368,18 +250,27 @@ export default function App() {
       // 1. Daily Emotional GTD
       if (dailyGtd?.lastDate !== todayStr) {
         try {
-          const insight = await generateEmotionalGTDInsight(entries, apiKey);
+          const { knowledgeGraph, addTriples } = useAppStore.getState();
+          const { insight, triples } = await generateEmotionalGTDInsight(entries, apiKey, knowledgeGraph);
           setDailyGtd({ insight, lastDate: todayStr });
+          if (triples && triples.length > 0) {
+            addTriples(triples, Date.now());
+          }
         } catch (e) {
           console.error("Daily GTD error:", e);
         }
       }
 
-      // 2. Personal Operating Manual (Update on Thursdays)
-      if (dayOfWeek === 4 && operatingManual?.lastDate !== todayStr) {
+      // 2. Personal Operating Manual (Update on Thursdays, or on first run / if placeholder is active)
+      const isManualPlaceholder = operatingManual?.insight?.includes("עדיין אין מספיק נתונים") || operatingManual?.insight?.includes("הדפוסים שלך מתגבשים");
+      if ((!operatingManual?.insight || isManualPlaceholder || (dayOfWeek === 4 && operatingManual?.lastDate !== todayStr))) {
         try {
-          const manual = await generateOperatingManual(entries, apiKey);
+          const { knowledgeGraph, addTriples } = useAppStore.getState();
+          const { insight: manual, triples } = await generateOperatingManual(entries, apiKey, knowledgeGraph);
           setOperatingManual({ insight: manual, lastDate: todayStr });
+          if (triples && triples.length > 0) {
+            addTriples(triples, Date.now());
+          }
         } catch (e) {
           console.error("Operating Manual error:", e);
         }
@@ -388,11 +279,17 @@ export default function App() {
       // 2. Weekly Life Themes (Friday) & Execution Gap Analysis
       if (dayOfWeek === 1 && (lifeThemes?.lastWeeklyDate !== todayStr || shadowWork?.lastDate !== todayStr)) {
         try {
-          const themes = await generateLifeThemesAnalysis(entries, apiKey, 'weekly');
-          const gapReport = await analyzeExecutionGap(entries, apiKey);
+          const { knowledgeGraph, addTriples } = useAppStore.getState();
+          const { insight: themes, triples: themesTriples } = await generateLifeThemesAnalysis(entries, apiKey, 'weekly', knowledgeGraph);
+          const { insight: gapReport, triples: gapTriples } = await analyzeExecutionGap(entries, apiKey, knowledgeGraph);
           setLifeThemes({ ...lifeThemes, weekly: themes, lastWeeklyDate: todayStr });
-          // We reuse shadowWork state slot for the "Execution Gap" as it's part of the Shadow Work / Critical series
           setShadowWork({ insight: gapReport, lastDate: todayStr });
+          if (themesTriples && themesTriples.length > 0) {
+            addTriples(themesTriples, Date.now());
+          }
+          if (gapTriples && gapTriples.length > 0) {
+            addTriples(gapTriples, Date.now());
+          }
         } catch (e) {
           console.error("Weekly analysis error:", e);
         }
@@ -401,8 +298,12 @@ export default function App() {
       // 3. Monthly Life Themes (1st of month)
       if (dayOfMonth === 1 && lifeThemes?.lastMonthlyDate !== todayStr) {
         try {
-          const themes = await generateLifeThemesAnalysis(entries, apiKey, 'monthly');
+          const { knowledgeGraph, addTriples } = useAppStore.getState();
+          const { insight: themes, triples: themesTriples } = await generateLifeThemesAnalysis(entries, apiKey, 'monthly', knowledgeGraph);
           setLifeThemes({ ...lifeThemes, monthly: themes, lastMonthlyDate: todayStr });
+          if (themesTriples && themesTriples.length > 0) {
+            addTriples(themesTriples, Date.now());
+          }
         } catch (e) {
           console.error("Monthly analysis error:", e);
         }
@@ -413,8 +314,12 @@ export default function App() {
       // 5. Major Insights (Triggered if new entries exist since last analysis)
       if (entries.length > 0 && entries.length !== lastMajorInsightsCount) {
           try {
-            const insights = await generateMajorInsights(entries, apiKey, majorInsights);
-            setMajorInsights(insights);
+            const { knowledgeGraph, addTriples } = useAppStore.getState();
+            const { insights: majorList, triples } = await generateMajorInsights(entries, apiKey, majorInsights, knowledgeGraph);
+            setMajorInsights(majorList);
+            if (triples && triples.length > 0) {
+              addTriples(triples, Date.now());
+            }
             setLastMajorInsightsCount(entries.length);
           } catch (e) {
             console.error("Major Insights error:", e);
@@ -426,84 +331,53 @@ export default function App() {
       const lastAdvicesCount = advices?.lastEntryCount || 0;
       if (currentEntryCount - lastAdvicesCount >= 5 && currentEntryCount > 0) {
         try {
-          const generatedAdvices = await generateAdvices(entries, apiKey);
+          const { knowledgeGraph, addTriples } = useAppStore.getState();
+          const { work, family, mental, triples } = await generateAdvices(entries, apiKey, knowledgeGraph);
+          if (triples && triples.length > 0) {
+            addTriples(triples, Date.now());
+          }
           const history = advices?.history || [];
           setAdvices({
             lastEntryCount: currentEntryCount,
             history: [{
               timestamp: Date.now(),
-              work: generatedAdvices.work,
-              family: generatedAdvices.family,
-              mental: generatedAdvices.mental
+              work,
+              family,
+              mental
             }, ...history]
           });
         } catch (e) {
           console.error("Failed to generate advices:", e);
         }
       }
-      // 7. Shadow Quick Advices (Triggered if 5 new entries since last generation)
-      const lastShadowAdvicesCount = shadowQuickAdvices?.lastEntryCount || 0;
-      
-      if (currentEntryCount - lastShadowAdvicesCount >= 5 && currentEntryCount > 0 && shadowWork?.insight) {
+      // 7. Quote Insights (Triggered once every 2 days if quotes exist)
+      const lastQuoteUpdate = quoteInsights?.lastUpdateDate ? new Date(quoteInsights.lastUpdateDate) : null;
+      const todayDate = new Date();
+      const diffDays = lastQuoteUpdate ? (todayDate.getTime() - lastQuoteUpdate.getTime()) / (1000 * 3600 * 24) : Infinity;
+
+      if (diffDays >= 2 && extractedQuotes.length > 0) {
         try {
-          const generatedShadowAdvices = await generateShadowQuickAdvices(shadowWork.insight, entries, apiKey);
-          setShadowQuickAdvices({
-            lastEntryCount: currentEntryCount,
-            advices: generatedShadowAdvices.slice(0, 5),
-            oldestIndex: 0,
+          const { knowledgeGraph, addTriples } = useAppStore.getState();
+          const existing = quoteInsights?.insights || [];
+          const { insight: newInsight, triples } = await generateQuoteInsight(extractedQuotes, existing, apiKey, knowledgeGraph);
+          
+          if (triples && triples.length > 0) {
+            addTriples(triples, Date.now());
+          }
+          
+          setQuoteInsights({
+            insights: [newInsight, ...existing],
             lastUpdateDate: todayStr
           });
         } catch (e) {
-          console.error("Failed to generate shadow quick advices:", e);
-        }
-      } else if (shadowWork?.insight && apiKey) {
-        // 8. Daily update for Shadow Quick Advices (change the oldest advice daily)
-        const currentAdvices = shadowQuickAdvices?.advices || [
-          "קח אוויר לפני שאתה מתפרץ בפגישות שמרגישות לחוצות.", 
-          "זכור לבצע פאוזה ולא להגיב מיד לטריגרים שקשורים לסמכות.",
-          "הקדש 5 דקות בסוף היום לרפלקציה על הפעולות שדחית.",
-          "שים לב מתי אתה משתמש במילה 'צריך' והחלף אותה ב'בוחר'.",
-          "זהה רגש אחד חסום היום ותן לו ביטוי בכתיבה של שתי דקות."
-        ];
-        
-        const lastUpdateDate = shadowQuickAdvices?.lastUpdateDate;
-        const oldestIndex = shadowQuickAdvices?.oldestIndex ?? 0;
-        
-        if (!lastUpdateDate || lastUpdateDate !== todayStr) {
-          try {
-            let updatedAdvices = [...currentAdvices];
-            while (updatedAdvices.length < 5) {
-              updatedAdvices.push("נשום עמוק והתבונן בתגובה שלך.");
-            }
-            if (updatedAdvices.length > 5) {
-              updatedAdvices = updatedAdvices.slice(0, 5);
-            }
-            
-            const newAdvice = await generateSingleShadowQuickAdvice(
-              shadowWork.insight,
-              entries,
-              updatedAdvices,
-              apiKey
-            );
-            
-            updatedAdvices[oldestIndex] = newAdvice;
-            
-            setShadowQuickAdvices({
-              lastEntryCount: shadowQuickAdvices?.lastEntryCount ?? currentEntryCount,
-              advices: updatedAdvices,
-              oldestIndex: (oldestIndex + 1) % 5,
-              lastUpdateDate: todayStr
-            });
-          } catch (e) {
-            console.error("Failed to perform daily shadow advice rotation:", e);
-          }
+          console.error("Failed to generate quote insight:", e);
         }
       }
     };
 
     const timeoutId = setTimeout(runAdvancedAnalysis, 10000);
     return () => clearTimeout(timeoutId);
-  }, [entries.length, apiKey, dailyGtd?.lastDate, lifeThemes?.lastWeeklyDate, lifeThemes?.lastMonthlyDate, shadowWork?.lastDate, operatingManual?.lastDate, advices?.lastEntryCount, shadowQuickAdvices?.lastEntryCount, shadowQuickAdvices?.lastUpdateDate, shadowQuickAdvices?.oldestIndex, shadowWork?.insight, lastMajorInsightsCount]);
+  }, [entries.length, apiKey, dailyGtd?.lastDate, lifeThemes?.lastWeeklyDate, lifeThemes?.lastMonthlyDate, shadowWork?.lastDate, operatingManual?.lastDate, advices?.lastEntryCount, quoteInsights?.lastUpdateDate, extractedQuotes.length, shadowWork?.insight, lastMajorInsightsCount]);
 
 
 
@@ -736,23 +610,41 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
            {/* Debug info if needed, or just space */}
         </div>
         <div className="flex items-center gap-2">
-           {!isAuthenticated && (
-             <span className="text-[10px] text-white/40 hidden xs:inline">שומר בדרייב</span>
-           )}
-          <button
-            onClick={isAuthenticated ? handleSignout : handleAuth}
-            disabled={isSyncing}
+          {syncStatus === 'saving' && (
+            <span className="text-[10px] text-white/40 hidden xs:inline">שומר בענן...</span>
+          )}
+          {syncStatus === 'synced' && (
+            <span className="text-[10px] text-emerald-400/80 hidden xs:inline">הנתונים שמורים בענן</span>
+          )}
+          {syncStatus === 'error' && (
+            <span className="text-[10px] text-red-400 hidden xs:inline">שגיאה בשמירה בענן</span>
+          )}
+          <div
             className={cn(
-              "w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-sm border",
-              isAuthenticated
-                ? "bg-[#DCFCE7] text-emerald-600 border-emerald-100"
-                : "bg-white/10 text-white/60 border-white/10",
-              isSyncing && "opacity-50 cursor-not-allowed"
+              "w-10 h-10 rounded-xl flex items-center justify-center transition-all border",
+              syncStatus === 'synced' && "bg-[#DCFCE7]/20 text-emerald-400 border-emerald-500/20",
+              syncStatus === 'saving' && "bg-amber-500/10 text-amber-400 border-amber-500/20",
+              syncStatus === 'error' && "bg-red-500/10 text-red-400 border-red-500/20"
             )}
-            title={isAuthenticated ? "מחובר ל-Drive (התנתק)" : "התחבר לשמירה ב-Drive"}
+            title={
+              syncStatus === 'synced' ? "הנתונים מסונכרנים ל-Firebase" : 
+              syncStatus === 'saving' ? "שומר שינויים ב-Firebase..." : 
+              "שגיאה בסנכרון מול Firebase"
+            }
           >
-            {isSyncing ? <Loader2 size={18} className="animate-spin" /> : <Cloud size={20} className={cn(isAuthenticated ? "text-emerald-600" : "text-white/40")} />}
-          </button>
+            {syncStatus === 'saving' ? (
+              <Loader2 size={18} className="animate-spin text-amber-400" />
+            ) : (
+              <Cloud 
+                size={20} 
+                className={cn(
+                  syncStatus === 'synced' ? "text-emerald-400" : 
+                  syncStatus === 'error' ? "text-red-400" : 
+                  "text-white/40"
+                )} 
+              />
+            )}
+          </div>
           <button
             onClick={() => setShowKeyModal(true)}
             className="w-10 h-10 bg-white rounded-xl flex items-center justify-center text-[#0D3B66] shadow-md border border-gray-100 hover:bg-gray-50 transition-all"
@@ -793,9 +685,9 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
                 <div className="text-white">{isStandalone ? "YES" : "NO"}</div>
               </div>
               <div className="p-2 bg-white/5 rounded border border-white/10 uppercase">
-                <div className="text-[10px] text-white/40">Auth</div>
-                <div className={cn("font-bold", isAuthenticated ? "text-emerald-400" : "text-red-400")}>
-                  {isAuthenticated ? "SYNCED" : "NOT SET"}
+                <div className="text-[10px] text-white/40">Firebase Sync</div>
+                <div className={cn("font-bold", syncStatus === 'synced' ? "text-emerald-400" : syncStatus === 'saving' ? "text-amber-400" : "text-red-400")}>
+                  {syncStatus.toUpperCase()}
                 </div>
               </div>
            </div>
@@ -894,6 +786,7 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
             handleSend={handleSend}
             isSending={isSending}
             handleToggleVoice={handleToggleVoice}
+            extractedQuotes={extractedQuotes}
           />
         )}
         {activeTab === 'dashboard' && <DashboardTab />}
@@ -1315,16 +1208,9 @@ function OpenThreadsTab({
   setActiveTab: (tab: 'home' | 'actions' | 'insights' | 'dashboard' | 'history') => void;
   setInput: (val: string) => void;
 }) {
-  const { entries, toggleThreadResolution, removeThread } = useAppStore();
+  const { globalThreads, toggleThreadResolution, removeThread } = useAppStore();
   
-  // Flatten all open threads from all entries
-  const allThreads = entries.flatMap(e => 
-    (e.openThreads || []).map(t => ({
-      entryId: e.id,
-      text: t.text,
-      isResolved: t.isResolved
-    }))
-  );
+  const allThreads = globalThreads || [];
 
   const activeThreads = allThreads.filter(t => !t.isResolved);
   const resolvedThreads = allThreads.filter(t => t.isResolved);
@@ -1336,7 +1222,7 @@ function OpenThreadsTab({
 
   const renderThread = (item: any, idx: number, isResolvedList: boolean) => (
     <div 
-      key={`${item.entryId}-${item.text}-${idx}`} 
+      key={`${item.id}-${item.text}-${idx}`} 
       className={cn(
         "backdrop-blur-3xl rounded-[2rem] p-5 flex flex-col sm:flex-row sm:items-center justify-between border shadow-2xl group transition-all gap-4",
         isResolvedList 
@@ -1376,7 +1262,7 @@ function OpenThreadsTab({
         )}
         
         <button 
-          onClick={() => toggleThreadResolution(item.entryId, item.text)}
+          onClick={() => toggleThreadResolution(item.id)}
           className={cn(
             "px-4 py-2 rounded-2xl text-xs font-bold flex items-center gap-1.5 transition-all border active:scale-95",
             isResolvedList
@@ -1391,7 +1277,7 @@ function OpenThreadsTab({
         <button 
           onClick={() => {
             if (window.confirm(`האם למחוק לחלוטין את החוט הבא: "${item.text}"?`)) {
-              removeThread(item.entryId, item.text);
+              removeThread(item.id);
             }
           }}
           className="w-10 h-10 rounded-2xl bg-red-500/10 hover:bg-red-500/20 text-red-400 flex items-center justify-center border border-red-500/10 transition-all opacity-0 group-hover:opacity-100 active:scale-95"
@@ -1453,7 +1339,8 @@ function InsightsTab({
   setInput,
   handleSend,
   isSending,
-  handleToggleVoice
+  handleToggleVoice,
+  extractedQuotes
 }: { 
   isLiveActive: boolean;
   input: string;
@@ -1461,12 +1348,13 @@ function InsightsTab({
   handleSend: () => void;
   isSending: boolean;
   handleToggleVoice: () => void;
+  extractedQuotes: DiaryEntry[];
 }) {
   const { 
     majorInsights, setMajorInsights,
     chatMessages, apiKey, entries,
-    dailyGtd, shadowQuickAdvices,
-    operatingManual, shadowWork, advices,
+    dailyGtd, quoteInsights,
+    operatingManual, setOperatingManual, shadowWork, advices,
     updateEntry, removeEntry
   } = useAppStore();
   const [showMajorInsights, setShowMajorInsights] = useState(false);
@@ -1477,55 +1365,46 @@ function InsightsTab({
   const [isGapExpanded, setIsGapExpanded] = useState(false);
   const [isAdvicesExpanded, setIsAdvicesExpanded] = useState(false);
   const [isQuotesExpanded, setIsQuotesExpanded] = useState(false);
+  const [isQuoteInsightsExpanded, setIsQuoteInsightsExpanded] = useState(false);
 
   const [editingQuoteId, setEditingQuoteId] = useState<string | null>(null);
   const [editQuoteText, setEditQuoteText] = useState('');
-
-  const extractedQuotes = useMemo(() => {
-    console.log('--- Extracted Quotes Diagnostic Start ---');
-    console.log('Total entries:', entries.length);
-    const result = entries.filter(entry => {
-      // 1. Check if any topic contains "ציטוט" (which renders as #ציטוטים or similar in UI)
-      const hasQuoteTopic = (entry.topics || []).some(topic => {
-        if (!topic) return false;
-        const clean = topic.replace(/[\u200e\u200f\s#]/g, '').toLowerCase();
-        const match = clean.includes('ציטוט');
-        if (match) {
-          console.log(`Matched topic in entry [${entry.id}]:`, topic);
-        }
-        return match;
-      });
-
-      // 2. Check if transcript contains the hashtag #ציטוט or #ציטוטים (ignoring RTL/LTR marks and spacing)
-      const normalizedTranscript = entry.transcript.replace(/[\u200e\u200f]/g, '');
-      const hasQuoteHashtag = 
-        /#ציטוט/.test(normalizedTranscript) || 
-        /#\s*ציטוט/.test(normalizedTranscript);
-
-      if (hasQuoteHashtag) {
-        console.log(`Matched hashtag in entry [${entry.id}]:`, entry.transcript.substring(0, 100));
-      }
-
-      const matched = hasQuoteTopic || hasQuoteHashtag;
-      console.log(`Entry [${entry.id}] date [${new Date(entry.timestamp).toLocaleDateString('he-IL')}]: matched = ${matched}, topics =`, entry.topics);
-      return matched;
-    });
-    console.log('Matched entries:', result.length);
-    console.log('--- Extracted Quotes Diagnostic End ---');
-    return result;
-  }, [entries]);
 
 
   const handleGenerateMajor = async () => {
     if (!apiKey) return;
     setIsGeneratingMajor(true);
     try {
-      const insights = await generateMajorInsights(entries, apiKey, majorInsights);
-      setMajorInsights(insights);
+      const { knowledgeGraph, addTriples } = useAppStore.getState();
+      const { insights: majorList, triples } = await generateMajorInsights(entries, apiKey, majorInsights, knowledgeGraph);
+      setMajorInsights(majorList);
+      if (triples && triples.length > 0) {
+        addTriples(triples, Date.now());
+      }
     } catch (err) {
       console.error(err);
     } finally {
       setIsGeneratingMajor(false);
+    }
+  };
+
+  const [isGeneratingManual, setIsGeneratingManual] = useState(false);
+
+  const handleGenerateManual = async () => {
+    if (!apiKey || entries.length === 0) return;
+    setIsGeneratingManual(true);
+    try {
+      const { knowledgeGraph, addTriples } = useAppStore.getState();
+      const { insight: manual, triples } = await generateOperatingManual(entries, apiKey, knowledgeGraph);
+      const todayStr = new Date().toLocaleDateString('en-CA');
+      setOperatingManual({ insight: manual, lastDate: todayStr });
+      if (triples && triples.length > 0) {
+        addTriples(triples, Date.now());
+      }
+    } catch (err) {
+      console.error("Manual playbook generation error:", err);
+    } finally {
+      setIsGeneratingManual(false);
     }
   };
 
@@ -1645,95 +1524,59 @@ function InsightsTab({
         </div>
       )}
 
-      {/* Shadow Quick Advices */}
+      {/* Quote Insights */}
       <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all relative group mt-4">
         <button 
-          onClick={() => setIsAdvicesExpanded(!isAdvicesExpanded)}
+          onClick={() => setIsQuoteInsightsExpanded(!isQuoteInsightsExpanded)}
           className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors relative z-10 text-right"
         >
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-[#FFD54F] rounded-2xl flex items-center justify-center text-[#0A3B66] shadow-[0_0_20px_rgba(255,213,79,0.4)] group-hover:rotate-12 transition-transform">
-              <Sparkles size={24} />
+            <div className="w-12 h-12 bg-blue-400/20 rounded-2xl flex items-center justify-center text-[#0A3B66] shadow-[0_0_20px_rgba(59,130,246,0.3)] group-hover:rotate-12 transition-transform">
+              <Quote size={24} />
             </div>
             <div className="text-right">
-              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">עצות מהירות</span>
-              <span className="block text-xs text-[#0A3B66]/60 font-medium mt-1">ישומיות יומיומיות מתוך עבודת הצללים</span>
+              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">תובנות מציטוטים</span>
+              <span className="block text-xs text-[#0A3B66]/60 font-medium mt-1">תובנות עמוקות שמופקות אחת ליומיים מהציטוטים שלך</span>
             </div>
           </div>
           <div className="flex items-center gap-3 text-[#0A3B66]/30">
-            {isAdvicesExpanded ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
+            {isQuoteInsightsExpanded ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
           </div>
         </button>
 
-        {isAdvicesExpanded && (
+        {isQuoteInsightsExpanded && (
           <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2 cursor-default pl-2">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-[#FFC107]/20 to-transparent rounded-full -m-10 group-hover:scale-150 transition-transform duration-700 pointer-events-none"></div>
+            <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-[#2196F3]/20 to-transparent rounded-full -m-10 group-hover:scale-150 transition-transform duration-700 pointer-events-none"></div>
             
-            <div className="space-y-3 relative z-10">
-              {(() => {
-                const advicesList = shadowQuickAdvices?.advices || [
-                  "קח אוויר לפני שאתה מתפרץ בפגישות שמרגישות לחוצות.", 
-                  "זכור לבצע פאוזה ולא להגיב מיד לטריגרים שקשורים לסמכות.",
-                  "הקדש 5 דקות בסוף היום לרפלקציה על הפעולות שדחית.",
-                  "שים לב מתי אתה משתמש במילה 'צריך' והחלף אותה ב'בוחר'.",
-                  "זהה רגש אחד חסום היום ותן לו ביטוי בכתיבה של שתי דקות."
-                ];
-                
-                const nextToReplaceIndex = shadowQuickAdvices?.oldestIndex ?? 0;
-                const recentlyUpdatedIndex = (nextToReplaceIndex - 1 + 5) % 5;
-                const hasUpdateToday = !!shadowQuickAdvices?.lastUpdateDate;
-                
-                return (
-                  <div className="space-y-3">
-                    {advicesList.map((advice, idx) => {
-                      const isNewest = hasUpdateToday && idx === recentlyUpdatedIndex;
-                      const isOldest = idx === nextToReplaceIndex;
-                      
-                      return (
-                        <div key={idx} className={cn(
-                          "flex gap-3 items-start p-3 rounded-2xl transition-all duration-300",
-                          isNewest 
-                            ? "bg-amber-400/10 border border-amber-400/30 shadow-md scale-[1.01]" 
-                            : "hover:bg-white/5 border border-transparent"
-                        )}>
-                          <div className={cn(
-                            "w-2 h-2 rounded-full mt-2 transition-all duration-300 flex-shrink-0",
-                            isNewest 
-                              ? "bg-[#FFC107] scale-125 shadow-[0_0_10px_rgba(255,193,7,0.8)] animate-pulse" 
-                              : "bg-[#0A3B66]/30"
-                          )}></div>
-                          <div className="flex-1 text-right">
-                            <p className={cn(
-                              "text-sm leading-relaxed",
-                              isNewest ? "text-[#0A3B66] font-bold" : "text-[#0A3B66]/90 font-medium"
-                            )}>
-                              {advice}
-                            </p>
-                            <div className="flex justify-start gap-2 mt-1">
-                              {isNewest && (
-                                <span className="inline-block text-[9px] text-amber-700 font-bold bg-amber-200/50 px-2 py-0.5 rounded-full">
-                                  עודכן היום (העצה הכי חדשה)
-                                </span>
-                              )}
-                              {isOldest && !isNewest && (
-                                <span className="inline-block text-[9px] text-[#0A3B66]/40 font-semibold bg-[#0A3B66]/5 px-2 py-0.5 rounded-full">
-                                  העצה הוותיקה ביותר (תוחלף מחר)
-                                </span>
-                              )}
-                            </div>
-                          </div>
+            <div className="space-y-4 relative z-10 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+              {(!quoteInsights?.insights || quoteInsights.insights.length === 0) ? (
+                <div className="py-10 flex flex-col items-center text-center space-y-4">
+                  <Quote size={40} className="text-[#0A3B66]/20" strokeWidth={1} />
+                  <p className="text-sm text-[#0A3B66]/40 italic">התובנות מהציטוטים שלך מתגבשות ברגעים אלו. הקפד לתייג ציטוטים ביומן עם #ציטוט...</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {quoteInsights.insights.map((insight, idx) => (
+                    <div key={idx} className="bg-white/10 hover:bg-white/15 p-4 rounded-3xl border border-white/30 transition-all">
+                      <div className="flex items-start gap-3">
+                        <div className="w-8 h-8 bg-blue-500/10 rounded-xl flex items-center justify-center text-blue-500 flex-shrink-0 mt-0.5">
+                          <Quote size={16} />
                         </div>
-                      );
-                    })}
-                    <div className="flex justify-between items-center pt-3 border-t border-white/20 mt-3 text-[10px] text-[#0A3B66]/50">
-                      <span className="font-medium">5 עצות פעילות במקביל (עצה אחת ותיקה מתחלפת בכל יום)</span>
-                      <span className="font-mono bg-white/30 px-2 py-0.5 rounded-full font-bold">
-                        {new Date().toLocaleDateString('he-IL', { weekday: 'long' })}
-                      </span>
+                        <div className="flex-1 text-right">
+                          <p className="text-sm leading-relaxed text-[#0A3B66] font-medium whitespace-pre-wrap">
+                            {insight}
+                          </p>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                );
-              })()}
+                  ))}
+                  {quoteInsights.lastUpdateDate && (
+                    <div className="pt-3 border-t border-white/20 mt-3 text-[10px] text-[#0A3B66]/50 text-left font-bold">
+                      עדכון אחרון: {new Date(quoteInsights.lastUpdateDate).toLocaleDateString('he-IL')}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1827,7 +1670,22 @@ function InsightsTab({
               <span className="block text-xs text-[#0A3B66]/60 uppercase tracking-widest mt-1">מבוסס חודש אחרון</span>
             </div>
           </div>
-          <div className="flex items-center gap-3 text-[#0A3B66]/30">
+          <div className="flex items-center gap-3 text-[#0A3B66]/30 relative z-20">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleGenerateManual();
+              }}
+              disabled={isGeneratingManual || !apiKey || entries.length === 0}
+              className="text-[#0A3B66] opacity-40 hover:opacity-100 disabled:opacity-20 p-1 hover:bg-white/10 rounded-lg transition-all flex items-center justify-center"
+              title="רענן ספר הפעלה"
+            >
+              {isGeneratingManual ? (
+                <Loader2 size={18} className="animate-spin" />
+              ) : (
+                <RefreshCw size={18} />
+              )}
+            </button>
             {operatingManual?.insight && <SpeechButton text={operatingManual.insight} className="text-[#0A3B66] opacity-40 hover:opacity-100" />}
             {isManualExpanded ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
           </div>
@@ -1835,10 +1693,12 @@ function InsightsTab({
 
         {isManualExpanded && (
           <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2 cursor-default">
-            {!operatingManual?.insight ? (
+            {isGeneratingManual || !operatingManual?.insight ? (
               <div className="py-10 flex flex-col items-center text-center space-y-4">
-                <Brain size={40} className="text-[#0A3B66]/20" strokeWidth={1} />
-                <p className="text-sm text-[#0A3B66]/40 italic">הדפוסים שלך מתגבשים ברגעים אלו...</p>
+                <Brain size={40} className="text-[#0A3B66]/20 animate-pulse" strokeWidth={1} />
+                <p className="text-sm text-[#0A3B66]/40 italic">
+                  {isGeneratingManual ? "מעדכן את ספר ההפעלה שלך..." : "הדפוסים שלך מתגבשים ברגעים אלו..."}
+                </p>
               </div>
             ) : (
               <div className="space-y-6">

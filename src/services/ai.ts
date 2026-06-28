@@ -27,13 +27,25 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
     });
 };
 
+export interface OKFTriple {
+    subject: string;
+    relation: string;
+    object: string;
+    domain?: 'Work' | 'Family' | 'Personal' | 'Health' | 'Finance' | 'General';
+    temporalContext?: 'Past' | 'Present' | 'Future';
+    confidence?: 'Fact' | 'Inference' | 'Opinion';
+    sentiment?: number; // -1, 0, 1
+    subjectType?: 'Person' | 'Project' | 'Concept' | 'Emotion' | 'Other';
+    objectType?: 'Person' | 'Project' | 'Concept' | 'Emotion' | 'Other';
+}
+
 export interface ProcessedSession {
     transcript: string;
     openThreads: string[];
     insights: string[];
     topics: string[];
     mood: string;
-    triples: [string, string, string][];
+    triples: OKFTriple[];
 }
 
 // Optimized Model Selection Logic based on current availability
@@ -88,6 +100,18 @@ export async function autoDiscoverModel(apiKey: string): Promise<{name: string, 
     return null;
 }
 
+export async function generateTextEmbedding(text: string, apiKey: string): Promise<number[]> {
+    const genAI = getGenAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: "text-embedding-004" });
+    try {
+        const result = await model.embedContent(text);
+        return result.embedding.values;
+    } catch (error) {
+        console.error("Error generating embedding:", error);
+        throw error;
+    }
+}
+
 // Fixed context for Guy's family
 const FIXED_CONTEXT = `
 שמות בני המשפחה של גיא:
@@ -95,6 +119,23 @@ const FIXED_CONTEXT = `
 - גיל: הבת שלי
 - איתן: הבן שלי
 - נוה: הבן שלי
+`;
+
+export const TRIPLES_SCHEMA_INSTRUCTION = `
+KNOWLEDGE GRAPH TRIPLES:
+Extract 3-7 meaningful relationships representing key facts, emotions, plans, or connections in this entry.
+For each relationship, you MUST return a structured object instead of a flat array, according to this format:
+{
+  "subject": "שם הישות הראשונה (למשל: גיא, טלי, עבודה, לחץ). שמור על שמות ישויות עקביים וממוקדים (עד 3 מילים).",
+  "relation": "סוג היחס (למשל: מרגיש, אוהב, מנהל, משפיע על, שואף ל)",
+  "object": "שם הישות השנייה. עד 3 מילים.",
+  "domain": "חייב להיות אחד מ: 'Work', 'Family', 'Personal', 'Health', 'Finance', 'General'",
+  "temporalContext": "חייב להיות אחד מ: 'Past', 'Present', 'Future'",
+  "confidence": "חייב להיות אחד מ: 'Fact', 'Inference', 'Opinion'",
+  "sentiment": מספר שלם בלבד: -1 (שלילי/תסכול), 0 (ניטרלי), או 1 (חיובי/סיפוק),
+  "subjectType": "חייב להיות אחד מ: 'Person', 'Project', 'Concept', 'Emotion', 'Other'",
+  "objectType": "חייב להיות אחד מ: 'Person', 'Project', 'Concept', 'Emotion', 'Other'"
+}
 `;
 
 // Helper to sanitize and parse JSON from AI response
@@ -137,10 +178,54 @@ const parseAIResponse = (text: string): any => {
         }
     } catch (e) {
         console.error("Failed to parse AI response as JSON:", text);
-        throw new Error("התגובה מה-AI לא הייתה בפורמט תקין. נסה שוב.");
     }
 };
 
+export function normalizeTriples(triples: any[] | undefined): OKFTriple[] {
+    if (!triples) return [];
+    return triples.map((t: any) => {
+        if (Array.isArray(t)) {
+            return {
+                subject: t[0] || '',
+                relation: t[1] || '',
+                object: t[2] || '',
+                domain: 'General',
+                temporalContext: 'Present',
+                confidence: 'Fact',
+                sentiment: 0,
+                subjectType: 'Other',
+                objectType: 'Other'
+            };
+        }
+        return {
+            subject: t.subject || t.s || '',
+            relation: t.relation || t.r || '',
+            object: t.object || t.o || '',
+            domain: t.domain || 'General',
+            temporalContext: t.temporalContext || 'Present',
+            confidence: t.confidence || 'Fact',
+            sentiment: typeof t.sentiment === 'number' ? t.sentiment : 0,
+            subjectType: t.subjectType || 'Other',
+            objectType: t.objectType || 'Other'
+        };
+    });
+}
+
+const buildGraphContext = (knowledgeGraph?: { nodes: any[]; edges: any[] }): string => {
+    if (!knowledgeGraph || !knowledgeGraph.edges || knowledgeGraph.edges.length === 0) {
+        return "";
+    }
+    const nodesStr = knowledgeGraph.nodes.map(n => `- ${n.label} (סוג: ${n.type || 'Other'}, חשיבות: ${n.val ? n.val.toFixed(1) : '1.0'})`).join('\n');
+    const edgesStr = knowledgeGraph.edges.map(e => `- [${e.source}] --(${e.relation}, תחום: ${e.domain || 'General'}, סנטימנט: ${e.sentiment ?? 0})--> [${e.target}]`).join('\n');
+    return `
+להלן מידע מתוך גרף הידע (Knowledge Graph) האישי של גיא:
+קשרים קיימים בגרף:
+${edgesStr}
+
+צמתים חשובים בגרף:
+${nodesStr}
+`;
+};
 
 export async function processAudioSession(audioBlob: Blob, apiKey: string, currentOpenThreads: string[] = []): Promise<ProcessedSession> {
     const genAI = getGenAI(apiKey);
@@ -163,7 +248,19 @@ export async function processAudioSession(audioBlob: Blob, apiKey: string, curre
     "insights": ["Array of psychological or general insights. MUST BE IN HEBREW.", ...],
     "topics": ["Array of short tags/categories. MUST BE IN HEBREW.", ...],
     "mood": "A short description of tone/mood. MUST BE IN HEBREW.",
-    "triples": [["Subject", "Relation", "Object"], ["שינה", "משפיעה על", "עבודה"]]
+    "triples": [
+      {
+        "subject": "שם הישות (למשל: גיא)",
+        "relation": "קשר (למשל: מרגיש)",
+        "object": "מושא (למשל: סיפוק)",
+        "domain": "Work/Family/Personal/Health/Finance/General",
+        "temporalContext": "Past/Present/Future",
+        "confidence": "Fact/Inference/Opinion",
+        "sentiment": 1/0/-1,
+        "subjectType": "Person/Project/Concept/Emotion/Other",
+        "objectType": "Person/Project/Concept/Emotion/Other"
+      }
+    ]
   }
 
   CRITICAL HALUCINATION PREVENTION:
@@ -174,11 +271,7 @@ export async function processAudioSession(audioBlob: Blob, apiKey: string, curre
   2. Avoid dry list-style tasks (like "buy groceries"). Instead, capture the underlying intention or dilemma.
   3. DEDUPLICATION: Compare identified open threads with the "Current Open Threads" list below. If a thread is already open and covers the same issue, ignore it to prevent duplicates.
 
-  KNOWLEDGE GRAPH TRIPLES:
-  Extract exactly 3-7 meaningful relationships as [Subject, Relation, Object].
-  - Focus on people (family members), work projects, persistent emotions, and causes/effects.
-  - Examples: ["טלי", "ביקשה", "להכין ארוחת ערב"], ["פרויקט X", "גורם ל", "לחץ"], ["גיא", "מרגיש", "סיפוק"].
-  - Use consistent naming for the same entities.
+  ${TRIPLES_SCHEMA_INSTRUCTION}
 
   Current Open Threads:
   ${currentOpenThreads.length > 0 ? currentOpenThreads.map(t => `- ${t}`).join('\n') : 'None'}
@@ -229,7 +322,19 @@ export async function processTextSession(textData: string, apiKey: string, curre
     "insights": ["Array of psychological or general insights. MUST BE IN HEBREW.", ...],
     "topics": ["Array of short tags/categories. MUST BE IN HEBREW.", ...],
     "mood": "A short description of tone/mood. MUST BE IN HEBREW.",
-    "triples": [["Subject", "Relation", "Object"], ["שינה", "משפיעה על", "עבודה"]]
+    "triples": [
+      {
+        "subject": "שם הישות (למשל: גיא)",
+        "relation": "קשר (למשל: מרגיש)",
+        "object": "מושא (למשל: סיפוק)",
+        "domain": "Work/Family/Personal/Health/Finance/General",
+        "temporalContext": "Past/Present/Future",
+        "confidence": "Fact/Inference/Opinion",
+        "sentiment": 1/0/-1,
+        "subjectType": "Person/Project/Concept/Emotion/Other",
+        "objectType": "Person/Project/Concept/Emotion/Other"
+      }
+    ]
   }
 
   CRITICAL HALUCINATION PREVENTION:
@@ -240,11 +345,7 @@ export async function processTextSession(textData: string, apiKey: string, curre
   2. Avoid dry list-style tasks (like "buy groceries"). Instead, capture the underlying intention or dilemma.
   3. DEDUPLICATION: Compare identified open threads with the "Current Open Threads" list below. If a thread is already open and covers the same issue, ignore it to prevent duplicates.
 
-  KNOWLEDGE GRAPH TRIPLES:
-  Extract exactly 3-7 meaningful relationships as [Subject, Relation, Object].
-  - Focus on people (family members), work projects, persistent emotions, and causes/effects.
-  - Examples: ["טלי", "ביקשה", "להכין ארוחת ערב"], ["פרויקט X", "גורם ל", "לחץ"], ["גיא", "מרגיש", "סיפוק"].
-  - Use consistent naming for the same entities.
+  ${TRIPLES_SCHEMA_INSTRUCTION}
 
   Current Open Threads:
   ${currentOpenThreads.length > 0 ? currentOpenThreads.map(t => `- ${t}`).join('\n') : 'None'}
@@ -286,6 +387,7 @@ export async function queryInsights(
         weeklyInsight?: string; 
         categoricalInsights?: { work: string; family: string; personal: string };
         chatHistory?: ChatMessageContext[];
+        relevantPastEntries?: { transcript: string; timestamp: number }[];
     }
 ): Promise<string> {
     const genAI = getGenAI(apiKey);
@@ -357,9 +459,17 @@ export async function queryInsights(
     }
 }
 
-export async function generateWeeklyBriefing(allEntries: { transcript: string; timestamp: number }[], apiKey: string): Promise<string> {
+export async function generateWeeklyBriefing(
+    allEntries: { transcript: string; timestamp: number }[],
+    apiKey: string,
+    _relevantPastEntries?: { transcript: string; timestamp: number }[],
+    knowledgeGraph?: { nodes: any[]; edges: any[] }
+): Promise<{ insight: string; triples: OKFTriple[] }> {
     const genAI = getGenAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
+    const model = genAI.getGenerativeModel({ 
+        model: activeModelName,
+        generationConfig: { responseMimeType: "application/json" }
+    }, { apiVersion: activeApiVersion as any });
 
     const now = new Date();
     const currentDateTime = now.toLocaleString('he-IL', { dateStyle: 'full', timeStyle: 'short' });
@@ -372,8 +482,10 @@ export async function generateWeeklyBriefing(allEntries: { transcript: string; t
         .join('\n\n');
 
     if (!recentTranscripts) {
-        return "אין עדיין מספיק נתונים מהשבוע האחרון כדי לייצר תובנה שבועית.";
+        return { insight: "אין עדיין מספיק נתונים מהשבוע האחרון כדי לייצר תובנה שבועית.", triples: [] };
     }
+
+    const graphText = buildGraphContext(knowledgeGraph);
 
     const prompt = `
   You are an expert personal growth coach and analyst for "גיא" (Guy).
@@ -392,24 +504,56 @@ export async function generateWeeklyBriefing(allEntries: { transcript: string; t
   Recent material:
   ${recentTranscripts}
 
+  ${graphText}
+
+  ${TRIPLES_SCHEMA_INSTRUCTION}
+  Return your response ONLY as a valid JSON object matching this structure:
+  {
+    "insight": "Your deep weekly insight in Hebrew...",
+    "triples": [
+      {
+        "subject": "שם הישות",
+        "relation": "קשר",
+        "object": "מושא",
+        "domain": "Work/Family/Personal/Health/Finance/General",
+        "temporalContext": "Past/Present/Future",
+        "confidence": "Fact/Inference/Opinion",
+        "sentiment": 1/0/-1,
+        "subjectType": "Person/Project/Concept/Emotion/Other",
+        "objectType": "Person/Project/Concept/Emotion/Other"
+      }
+    ]
+  }
+
   הקשר קבוע לגבי בני משפחה:
   ${FIXED_CONTEXT}
   `;
 
-
     try {
         const result = await model.generateContent(prompt);
         const response = await result.response;
-        return response.text() || "לא הצלחתי לייצר תובנה שבועית כרגע.";
+        const parsed = parseAIResponse(response.text());
+        if (typeof parsed === 'string') return { insight: parsed, triples: [] };
+        return {
+            insight: parsed.insight || '',
+            triples: normalizeTriples(parsed.triples)
+        };
     } catch (error: any) {
         console.error("Error generating weekly briefing:", error);
         throw error;
     }
 }
 
-export async function generateCategoricalInsights(allEntries: { transcript: string; timestamp: number }[], apiKey: string): Promise<{ work: string; family: string; personal: string }> {
+export async function generateCategoricalInsights(
+    allEntries: { transcript: string; timestamp: number }[],
+    apiKey: string,
+    knowledgeGraph?: { nodes: any[]; edges: any[] }
+): Promise<{ work: string; family: string; personal: string; triples: OKFTriple[] }> {
     const genAI = getGenAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: liteModelName }, { apiVersion: activeApiVersion as any });
+    const model = genAI.getGenerativeModel({ 
+        model: liteModelName,
+        generationConfig: { responseMimeType: "application/json" }
+    }, { apiVersion: activeApiVersion as any });
 
     const weekStart = getStartOfCurrentWeek();
     const recentTranscripts = allEntries
@@ -421,9 +565,12 @@ export async function generateCategoricalInsights(allEntries: { transcript: stri
         return {
             work: "אין מספיק נתונים מהשבוע האחרון.",
             family: "אין מספיק נתונים מהשבוע האחרון.",
-            personal: "אין מספיק נתונים מהשבוע האחרון."
+            personal: "אין מספיק נתונים מהשבוע האחרון.",
+            triples: []
         };
     }
+
+    const graphText = buildGraphContext(knowledgeGraph);
 
     const prompt = `
   You are an expert personal growth coach and psychological analyst for "גיא" (Guy).
@@ -432,11 +579,27 @@ export async function generateCategoricalInsights(allEntries: { transcript: stri
   2. Family (משפחה)
   3. Personal/Psychological (אישי - ניתוח פסיכולוגי)
 
+  ${graphText}
+
+  ${TRIPLES_SCHEMA_INSTRUCTION}
   Return the result in clear JSON format:
   {
     "work": "Insight about work, addressing Guy personally",
     "family": "Insight about family, addressing Guy personally",
-    "personal": "Deep psychological insight, addressing the user directly"
+    "personal": "Deep psychological insight, addressing the user directly",
+    "triples": [
+      {
+        "subject": "שם הישות",
+        "relation": "קשר",
+        "object": "מושא",
+        "domain": "Work/Family/Personal/Health/Finance/General",
+        "temporalContext": "Past/Present/Future",
+        "confidence": "Fact/Inference/Opinion",
+        "sentiment": 1/0/-1,
+        "subjectType": "Person/Project/Concept/Emotion/Other",
+        "objectType": "Person/Project/Concept/Emotion/Other"
+      }
+    ]
   }
 
   CRITICAL:
@@ -451,120 +614,119 @@ export async function generateCategoricalInsights(allEntries: { transcript: stri
   ${FIXED_CONTEXT}
   `;
 
-
     try {
         const result = await model.generateContent(prompt);
         const response = await result.response;
-        return parseAIResponse(response.text());
+        const parsed = parseAIResponse(response.text());
+        return {
+            work: parsed.work || '',
+            family: parsed.family || '',
+            personal: parsed.personal || '',
+            triples: normalizeTriples(parsed.triples)
+        };
     } catch (error: any) {
         console.error("Error generating categorical insights:", error);
         return {
             work: "שגיאה בעיבוד הנתונים.",
             family: "שגיאה בעיבוד הנתונים.",
-            personal: "שגיאה בעיבוד הנתונים."
+            personal: "שגיאה בעיבוד הנתונים.",
+            triples: []
         };
     }
 }
 
-export async function generateShadowQuickAdvices(shadowWorkInsight: string, allEntries: { transcript: string; timestamp: number }[], apiKey: string): Promise<string[]> {
+export async function generateQuoteInsight(
+    quotes: { transcript: string; timestamp: number }[],
+    existingInsights: string[],
+    apiKey: string,
+    knowledgeGraph?: { nodes: any[]; edges: any[] }
+): Promise<{ insight: string; triples: OKFTriple[] }> {
     const genAI = getGenAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
+    const model = genAI.getGenerativeModel({ 
+        model: activeModelName,
+        generationConfig: { responseMimeType: "application/json" }
+    }, { apiVersion: activeApiVersion as any });
 
-    const fourteenDaysAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
-    const recentTranscripts = allEntries
-        .filter(e => e.timestamp >= fourteenDaysAgo)
-        .map(e => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`)
+    if (quotes.length === 0) {
+        return { insight: "עדיין אין ציטוטים מוגדרים במערכת כדי לייצר מהם תובנות.", triples: [] };
+    }
+
+    const quotesText = quotes
+        .map(q => `[${new Date(q.timestamp).toLocaleDateString('he-IL')}]: ${q.transcript}`)
         .join('\n\n');
 
-    if (!shadowWorkInsight) {
-        return ["אין מספיק נתוני עבודת צללים (Shadow Work) זמינים עדיין כדי לייצר עצות."];
-    }
+    const existingInsightsText = existingInsights && existingInsights.length > 0
+        ? existingInsights.map((insight, idx) => `${idx + 1}. ${insight}`).join('\n')
+        : "אין תובנות קודמות.";
+
+    const graphText = buildGraphContext(knowledgeGraph);
 
     const prompt = `
-  אתה פסיכולוג ומומחה עבודת צללים של "גיא". 
-  לפניך סיכום נקודת העבודה הנוכחית של גיא מתוך ניתוח עבודת הצללים (Shadow Work) שלו:
-  "${shadowWorkInsight}"
-
-  קח בחשבון את הסיכום הזה ואת היומנים מהשבועיים האחרונים, וצור בדיוק 5 עצות קצרות ומהירות להתמודדות מעשית.
+  אתה מומחה לניתוח פילוסופי וקוגניטיבי, ועובד עם שיטת ארגון הידע OKF.
+  תפקידך לנתח את הציטוטים שגיא שמר ביומן שלו, ולייצר תובנה עמוקה, מעשית ומעוררת מחשבה (חדשה ושונה מהתובנות הקודמות).
   
+  הנה הציטוטים של גיא:
+  ${quotesText}
+
+  הנה תובנות מציטוטים שכבר ייצרת בעבר (אל תחזור עליהן, נסה להציע זווית חדשה או להעמיק בנושא אחר שעולה מהציטוטים):
+  ${existingInsightsText}
+
+  ${graphText}
+
+  ${TRIPLES_SCHEMA_INSTRUCTION}
+
   דרישות:
-  - כל עצה חייבת להיות בין משפט אחד לשניים בלבד.
-  - פנה ישירות לגיא בגוף שני ("אתה", "כדאי ש...").
-  - התמקד ביישום יומיומי קצר ומיידי שיכול לעזור לו עם הפער שתואר בעבודת הצללים.
-  - החזר תשובה בפורמט JSON בלבד. המבנה חייב להיות מערך של 5 מחרוזות. (לדוגמה: ["עצה 1", "עצה 2", "עצה 3", "עצה 4", "עצה 5"]). ללא שום טקסט נוסף לפני או אחרי עטיפת ה-JSON.
-
-  היומנים מהשבועיים האחרונים:
-  ${recentTranscripts}
-  `;
-
-    try {
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        return parseAIResponse(response.text());
-    } catch (error: any) {
-        console.error("Error generating shadow quick advices:", error);
-        return [
-            "שגיאה ביצירת עצות המבוססות על עבודת צללים."
-        ];
+  - כתוב תובנה אחת ממוקדת, חדה ומעוררת השראה (בין 2 ל-4 משפטים).
+  - פנה אל גיא בגוף שני ("אתה").
+  - התבסס ישירות על הרעיונות או רוח הדברים שעולים מהציטוטים שלו.
+  - החזר תשובה בפורמט JSON בלבד. המבנה חייב להיות אובייקט עם שדה "insight" (מחרוזת) ושדה "triples" (מערך של שלשות). דוגמה:
+    {
+      "insight": "התובנה שלך כאן...",
+      "triples": [
+        {
+          "subject": "שם הישות",
+          "relation": "קשר",
+          "object": "מושא",
+          "domain": "Work/Family/Personal/Health/Finance/General",
+          "temporalContext": "Past/Present/Future",
+          "confidence": "Fact/Inference/Opinion",
+          "sentiment": 1/0/-1,
+          "subjectType": "Person/Project/Concept/Emotion/Other",
+          "objectType": "Person/Project/Concept/Emotion/Other"
+        }
+      ]
     }
-}
-
-export async function generateSingleShadowQuickAdvice(shadowWorkInsight: string, allEntries: { transcript: string; timestamp: number }[], existingAdvices: string[], apiKey: string): Promise<string> {
-    const genAI = getGenAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
-
-    const fourteenDaysAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
-    const recentTranscripts = allEntries
-        .filter(e => e.timestamp >= fourteenDaysAgo)
-        .map(e => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`)
-        .join('\n\n');
-
-    if (!shadowWorkInsight) {
-        return "אין מספיק נתוני עבודת צללים זמינים כרגע כדי לייצר עצה חדשה.";
-    }
-
-    const existingListStr = existingAdvices.map((a, i) => `${i + 1}. ${a}`).join('\n');
-
-    const prompt = `
-  אתה פסיכולוג ומומחה עבודת צללים של "גיא". 
-  לפניך סיכום נקודת העבודה הנוכחית של גיא מתוך ניתוח עבודת הצללים (Shadow Work) שלו:
-  "${shadowWorkInsight}"
-
-  קח בחשבון את הסיכום הזה ואת היומנים מהשבועיים האחרונים.
-  כמו כן, לפניך העצות המהירות הקיימות כרגע ברשימה שלו:
-  ${existingListStr}
-
-  צור עצה מהירה אחת חדשה לגמרי להתמודדות מעשית, שתחליף את העצה הכי פחות רלוונטית או הכי ותיקה שלו.
-  העצה החדשה חייבת להיות שונה מכל העצות הקיימות ברשימה!
-  
-  דרישות:
-  - העצה חייבת להיות בין משפט אחד לשניים בלבד.
-  - פנה ישירות לגיא בגוף שני ("אתה", "כדאי ש...").
-  - התמקד ביישום יומיומי קצר ומיידי שיכול לעזור לו עם הפער שתואר בעבודת הצללים.
-  - החזר תשובה בפורמט JSON בלבד. המבנה חייב להיות אובייקט עם שדה "advice" המכיל את מחרוזת העצה. (לדוגמה: {"advice": "עצה חדשה..."}). ללא שום טקסט נוסף לפני או אחרי עטיפת ה-JSON.
-
-  היומנים מהשבועיים האחרונים:
-  ${recentTranscripts}
   `;
 
     try {
         const result = await model.generateContent(prompt);
         const response = await result.response;
         const parsed = parseAIResponse(response.text());
-        if (typeof parsed === 'object' && parsed !== null) {
-            if (parsed.advice) return parsed.advice;
-            if (Array.isArray(parsed)) return parsed[0];
-        }
-        return typeof parsed === 'string' ? parsed : response.text().trim();
+        if (typeof parsed === 'string') return { insight: parsed, triples: [] };
+        return {
+            insight: parsed.insight || '',
+            triples: normalizeTriples(parsed.triples)
+        };
     } catch (error: any) {
-        console.error("Error generating single shadow quick advice:", error);
-        return "זהה רגש אחד חסום היום ותן לו ביטוי בכתיבה של שתי דקות.";
+        console.error("Error generating quote insight:", error);
+        return {
+            insight: "שגיאה ביצירת תובנה מציטוטים.",
+            triples: []
+        };
     }
 }
 
-export async function generateAdvices(allEntries: { transcript: string; timestamp: number }[], apiKey: string): Promise<{ work: string; family: string; mental: string }> {
+
+export async function generateAdvices(
+    allEntries: { transcript: string; timestamp: number }[],
+    apiKey: string,
+    knowledgeGraph?: { nodes: any[]; edges: any[] }
+): Promise<{ work: string; family: string; mental: string; triples: OKFTriple[] }> {
     const genAI = getGenAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
+    const model = genAI.getGenerativeModel({ 
+        model: activeModelName,
+        generationConfig: { responseMimeType: "application/json" }
+    }, { apiVersion: activeApiVersion as any });
 
     const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
     const recentTranscripts = allEntries
@@ -576,9 +738,12 @@ export async function generateAdvices(allEntries: { transcript: string; timestam
         return {
             work: "אין מספיק נתונים לחודש האחרון כדי לייצר עצה בעבודה.",
             family: "אין מספיק נתונים לחודש האחרון כדי לייצר עצה למשפחה.",
-            mental: "אין מספיק נתונים לחודש האחרון כדי לייצר עצה לרווחה הנפשית."
+            mental: "אין מספיק נתונים לחודש האחרון כדי לייצר עצה לרווחה הנפשית.",
+            triples: []
         };
     }
+
+    const graphText = buildGraphContext(knowledgeGraph);
 
     const prompt = `
   אתה יועץ אישי ופסיכולוגי בכיר של "גיא".
@@ -586,6 +751,10 @@ export async function generateAdvices(allEntries: { transcript: string; timestam
   1. עבודה (Work)
   2. משפחה (Family)
   3. רווחה נפשית (Mental Well-being)
+
+  ${graphText}
+
+  ${TRIPLES_SCHEMA_INSTRUCTION}
 
   דרישות:
   - על כל עצה להיות **קצרה מאוד, עד 3 שורות לכל היותר**. עצה פרקטית וישירה אליו.
@@ -595,7 +764,20 @@ export async function generateAdvices(allEntries: { transcript: string; timestam
   {
     "work": "עצה קצרה ואקטיבית לעבודה",
     "family": "עצה קצרה ואקטיבית למשפחה",
-    "mental": "עצה קצרה ואקטיבית לרווחה"
+    "mental": "עצה קצרה ואקטיבית לרווחה",
+    "triples": [
+      {
+        "subject": "שם הישות",
+        "relation": "קשר",
+        "object": "מושא",
+        "domain": "Work/Family/Personal/Health/Finance/General",
+        "temporalContext": "Past/Present/Future",
+        "confidence": "Fact/Inference/Opinion",
+        "sentiment": 1/0/-1,
+        "subjectType": "Person/Project/Concept/Emotion/Other",
+        "objectType": "Person/Project/Concept/Emotion/Other"
+      }
+    ]
   }
 
   הקשר קבוע לגבי המשפחה:
@@ -608,39 +790,75 @@ export async function generateAdvices(allEntries: { transcript: string; timestam
     try {
         const result = await model.generateContent(prompt);
         const response = await result.response;
-        return parseAIResponse(response.text());
+        const parsed = parseAIResponse(response.text());
+        return {
+            work: parsed.work || '',
+            family: parsed.family || '',
+            mental: parsed.mental || '',
+            triples: normalizeTriples(parsed.triples)
+        };
     } catch (error: any) {
         console.error("Error generating advices:", error);
         throw error;
     }
 }
 
-export async function generateLifeThemesAnalysis(allEntries: { transcript: string; timestamp: number }[], apiKey: string, type: 'weekly' | 'monthly'): Promise<string> {
+export async function generateLifeThemesAnalysis(
+    allEntries: { transcript: string; timestamp: number }[],
+    apiKey: string,
+    type: 'weekly' | 'monthly',
+    knowledgeGraph?: { nodes: any[]; edges: any[] }
+): Promise<{ insight: string; triples: OKFTriple[] }> {
     const genAI = getGenAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
+    const model = genAI.getGenerativeModel({ 
+        model: activeModelName,
+        generationConfig: { responseMimeType: "application/json" }
+    }, { apiVersion: activeApiVersion as any });
 
     const timeRangeText = type === 'weekly' ? 'מהשבוע האחרון' : 'מהחודש האחרון';
     const threshold = type === 'weekly' ? 7 : 30;
     const entriesToAnalyze = allEntries.filter(e => e.timestamp >= (Date.now() - threshold * 24 * 60 * 60 * 1000));
 
-    if (entriesToAnalyze.length === 0) return `אין מספיק נתונים ${timeRangeText} לניתוח תמות חיים.`;
+    if (entriesToAnalyze.length === 0) return { insight: `אין מספיק נתונים ${timeRangeText} לניתוח תמות חיים.`, triples: [] };
 
     const transcripts = entriesToAnalyze
         .map(e => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`)
         .join('\n\n');
 
+    const graphText = buildGraphContext(knowledgeGraph);
 
     const prompt = `
   אתה אנליסט דפוסים אישי ומומחה בפסיכולוגיה של "תמות חיים" (Life Themes).
   המשימה שלך: לנתח את המחשבות של גיא ${timeRangeText} ולזהות 2-3 "תמות על" - נושאים מרכזיים שחוזרים על עצמם, גם אם בדרכים שונות.
   בנוסף, השווה את התמות האלו למה שאתה מזהה כ"עבר רחוק יותר" (מתוך כלל החומר) וציין אם יש שינוי, התקדמות או נסיגה.
 
+  ${graphText}
+
+  ${TRIPLES_SCHEMA_INSTRUCTION}
 
   דרישות:
   - פנה למשתמש ישירות בגוף שני ("אתה").
   - כתוב בעברית קולחת ומקצועית אך נגישה.
   - התמקד ב"למה" מאחורי הדברים, לא רק ב"מה".
   
+  Return your response ONLY as a valid JSON object matching this structure:
+  {
+    "insight": "Your life themes analysis in Hebrew...",
+    "triples": [
+      {
+        "subject": "שם הישות",
+        "relation": "קשר",
+        "object": "מושא",
+        "domain": "Work/Family/Personal/Health/Finance/General",
+        "temporalContext": "Past/Present/Future",
+        "confidence": "Fact/Inference/Opinion",
+        "sentiment": 1/0/-1,
+        "subjectType": "Person/Project/Concept/Emotion/Other",
+        "objectType": "Person/Project/Concept/Emotion/Other"
+      }
+    ]
+  }
+
   החומר לניתוח:
   ${transcripts}
 
@@ -648,38 +866,73 @@ export async function generateLifeThemesAnalysis(allEntries: { transcript: strin
   ${FIXED_CONTEXT}
   `;
 
-
     try {
         const result = await model.generateContent(prompt);
         const response = await result.response;
-        return response.text() || "לא הצלחתי לייצר ניתוח תמות חיים.";
+        const parsed = parseAIResponse(response.text());
+        if (typeof parsed === 'string') return { insight: parsed, triples: [] };
+        return {
+            insight: parsed.insight || '',
+            triples: normalizeTriples(parsed.triples)
+        };
     } catch (error) {
         console.error("Error generating life themes:", error);
         throw error;
     }
 }
 
-export async function analyzeExecutionGap(allEntries: { transcript: string; tasks?: any[]; timestamp: number }[], apiKey: string): Promise<string> {
+export async function analyzeExecutionGap(
+    allEntries: { transcript: string; tasks?: any[]; timestamp: number }[],
+    apiKey: string,
+    knowledgeGraph?: { nodes: any[]; edges: any[] }
+): Promise<{ insight: string; triples: OKFTriple[] }> {
     const genAI = getGenAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
+    const model = genAI.getGenerativeModel({ 
+        model: activeModelName,
+        generationConfig: { responseMimeType: "application/json" }
+    }, { apiVersion: activeApiVersion as any });
 
     // Focus on recent actions vs intentions (last 30 days roughly)
     const recentEntries = [...allEntries].sort((a, b) => b.timestamp - a.timestamp).slice(0, 30);
-    if (recentEntries.length === 0) return "אין עדיין נתונים לבדיקת פערי ביצוע.";
+    if (recentEntries.length === 0) return { insight: "אין עדיין נתונים לבדיקת פערי ביצוע.", triples: [] };
 
     const transcriptsAndTasks = recentEntries
         .map(e => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]\nמחשבות בדיווח: ${e.transcript}\nמשימות שהוגדרו: ${(e.tasks || []).map(t => typeof t === 'string' ? t : t.text).join(', ')}`)
         .join('\n\n');
 
+    const graphText = buildGraphContext(knowledgeGraph);
+
     const prompt = `
   אתה מומחה לפסיכולוגיה התנהגותית. המשימה שלך היא לבדוק את "פער הביצוע" (Expectation vs. Reality Mapping) של גיא - הפער בין התוכניות המשימות והכוונות שהוא מצהיר עליהן ביומן, לבין מה שהוא עושה בפועל בדיווחים ובמחשבות העוקבות.
   זהה "דחיינות כרונית" או אזורים בהם יש הימנעות רגשית מתמדת למרות כוונות טובות.
   
+  ${graphText}
+
+  ${TRIPLES_SCHEMA_INSTRUCTION}
+
   דרישות:
   - פנה למשתמש ישירות בגוף שני ("אתה").
   - הבא דוגמה קונקרטית מתוך הנתונים שלו (משימה או כוונה שנמנעה מספר פעמים ואת התירוצים שניתנו).
   - היה ביקורתי (פרקליט השטן) אבל תן הצעה טיפולית.
   - כתוב בעברית בלבד. 2-3 פסקאות קצרות.
+
+  Return your response ONLY as a valid JSON object matching this structure:
+  {
+    "insight": "Your execution gap analysis in Hebrew...",
+    "triples": [
+      {
+        "subject": "שם הישות",
+        "relation": "קשר",
+        "object": "מושא",
+        "domain": "Work/Family/Personal/Health/Finance/General",
+        "temporalContext": "Past/Present/Future",
+        "confidence": "Fact/Inference/Opinion",
+        "sentiment": 1/0/-1,
+        "subjectType": "Person/Project/Concept/Emotion/Other",
+        "objectType": "Person/Project/Concept/Emotion/Other"
+      }
+    ]
+  }
 
   נתונים לניתוח (הצהרות מול דיווח על מה שקרה באמת בימים העוקבים):
   ${transcriptsAndTasks}
@@ -691,32 +944,68 @@ export async function analyzeExecutionGap(allEntries: { transcript: string; task
     try {
         const result = await model.generateContent(prompt);
         const response = await result.response;
-        return response.text() || "אין כרגע פערי ביצוע בולטים.";
+        const parsed = parseAIResponse(response.text());
+        if (typeof parsed === 'string') return { insight: parsed, triples: [] };
+        return {
+            insight: parsed.insight || '',
+            triples: normalizeTriples(parsed.triples)
+        };
     } catch (error) {
         console.error("Error analyzing execution gap:", error);
-        return "שגיאה בניתוח פער הביצוע.";
+        return { insight: "שגיאה בניתוח פער הביצוע.", triples: [] };
     }
 }
 
-export async function generateEmotionalGTDInsight(allEntries: { transcript: string; timestamp: number }[], apiKey: string): Promise<string> {
+export async function generateEmotionalGTDInsight(
+    allEntries: { transcript: string; timestamp: number }[],
+    apiKey: string,
+    knowledgeGraph?: { nodes: any[]; edges: any[] }
+): Promise<{ insight: string; triples: OKFTriple[] }> {
     const genAI = getGenAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: liteModelName }, { apiVersion: activeApiVersion as any });
+    const model = genAI.getGenerativeModel({ 
+        model: liteModelName,
+        generationConfig: { responseMimeType: "application/json" }
+    }, { apiVersion: activeApiVersion as any });
 
     const recentTranscripts = allEntries
         .slice(0, 10) 
         .map(e => e.transcript)
         .join('\n\n');
 
+    const graphText = buildGraphContext(knowledgeGraph);
+
     const prompt = `
   אתה מומחה לניתוח מעמקים רגשי ותובנות יומיומיות. במקום להתמקד רק ברשימות משימות, אתה עוזר לגיא להבין אילו נושאים "תוקעים" אותו רגשית ואיך לגשת אליהם.
-  נתח את מצבו היום והצע לו "תובנה רגשית יומית עיקרית" אחת - ניתוח קצר של מה שהכי מעסיק אותו היום, ואיך הוא יכול לפעול בנושא.
+  נתח את מצבו היום, תוך הסתמכות על יומניו האחרונים ועל רשת הידע (Knowledge Graph) שלו, והצע לו "תובנה רגשית יומית עיקרית" אחת - ניתוח קצר של מה שהכי מעסיק אותו היום, ואיך הוא יכול לפעול בנושא.
+
+  ${graphText}
+
+  ${TRIPLES_SCHEMA_INSTRUCTION}
 
   דרישות חובה:
   - השתמש בבולטים (bullets) ברורים וקצרים.
   - פנה למשתמש ישירות בגוף שני ("אתה").
   - כתוב בעברית בלבד.
-  - מבנה התשובה: פתיחה קצרה, ואז 2-3 בולטים של תובנות/פעולות מוצעות.
+  - מבנה התשובה: פתיחה קצרה, ואם יש 2-3 בולטים של תובנות/פעולות מוצעות.
   
+  Return your response ONLY as a valid JSON object matching this structure:
+  {
+    "insight": "Your emotional GTD analysis in Hebrew...",
+    "triples": [
+      {
+        "subject": "שם הישות",
+        "relation": "קשר",
+        "object": "מושא",
+        "domain": "Work/Family/Personal/Health/Finance/General",
+        "temporalContext": "Past/Present/Future",
+        "confidence": "Fact/Inference/Opinion",
+        "sentiment": 1/0/-1,
+        "subjectType": "Person/Project/Concept/Emotion/Other",
+        "objectType": "Person/Project/Concept/Emotion/Other"
+      }
+    ]
+  }
+
   הקשר אחרון:
   ${recentTranscripts}
 
@@ -724,20 +1013,31 @@ export async function generateEmotionalGTDInsight(allEntries: { transcript: stri
   ${FIXED_CONTEXT}
   `;
 
-
     try {
         const result = await model.generateContent(prompt);
         const response = await result.response;
-        return response.text() || "לא הצלחתי לייצר תובנת GTD רגשית.";
+        const parsed = parseAIResponse(response.text());
+        if (typeof parsed === 'string') return { insight: parsed, triples: [] };
+        return {
+            insight: parsed.insight || '',
+            triples: normalizeTriples(parsed.triples)
+        };
     } catch (error) {
         console.error("Error generating emotional GTD insight:", error);
         throw error;
     }
 }
 
-export async function generateOperatingManual(allEntries: { transcript: string; timestamp: number }[], apiKey: string): Promise<string> {
+export async function generateOperatingManual(
+    allEntries: { transcript: string; timestamp: number }[],
+    apiKey: string,
+    knowledgeGraph?: { nodes: any[]; edges: any[] }
+): Promise<{ insight: string; triples: OKFTriple[] }> {
     const genAI = getGenAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
+    const model = genAI.getGenerativeModel({ 
+        model: activeModelName,
+        generationConfig: { responseMimeType: "application/json" }
+    }, { apiVersion: activeApiVersion as any });
 
     const isFirstOfMonth = new Date().getDate() === 1;
     
@@ -746,22 +1046,28 @@ export async function generateOperatingManual(allEntries: { transcript: string; 
         ? [...allEntries].sort((a, b) => b.timestamp - a.timestamp)
         : [...allEntries].sort((a, b) => b.timestamp - a.timestamp).slice(0, 30);
 
-    if (entriesToAnalyze.length === 0) return "עדיין אין מספיק נתונים כדי לייצר את ספר ההפעלה שלך. המשך לשתף במחשבות!";
+    if (entriesToAnalyze.length === 0) return { insight: "עדיין אין מספיק נתונים כדי לייצר את ספר ההפעלה שלך. המשך לשתף במחשבות!", triples: [] };
 
     const transcripts = entriesToAnalyze
         .map(e => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`)
         .join('\n\n');
 
-    const prompt = `
-  אתה מומחה לניתוח דפוסי התנהגות ופסיכולוגיה קוגניטיבית. המטרה שלך היא לכתוב את "ספר ההפעלה" (Personal Operating Manual) of גיא.
-  זהו מסמך פרקטי שמרכז את התובנות העמוקות ביותר על איך גיא "עובד" הכי טוב, מה מניע אותו, ומה עוצר אותו.
-  עליך לפעול כ"פרקליט השטן" מול דפוסים מתחמקים או סתירות פנימיות. זהה איפה גיא משקר לעצמו לאורך זמן ומה הסתירות הקבועות בהתנהגותו.
+    const graphText = buildGraphContext(knowledgeGraph);
 
-  המשימה שלך: נתח את כל המחשבות והשיחות של גיא וחלץ דפוסים חוזרים בנקודות קצרות וברורות בנושאים הבאים:
+    const prompt = `
+  אתה מומחה לניתוח דפוסי התנהגות ופסיכולוגיה קוגניטיבית. המטרה שלך היא לכתוב את "ספר ההפעלה" (Personal Operating Manual) של גיא.
+  זהו מסמך פרקטי שמרכז את התובנות העמוקות ביותר על איך גיא "עובד" הכי טוב, מה מניע אותו, ומה עוצר אותו.
+  עליך לפעול כ"פרקליט השטן" מול דפוסים מתחמקים או סתירות פנימיות, מתוך סקירת רשת הידע OKF שלו וההיסטוריה שלו.
+
+  המשימה שלך: נתח את כל המחשבות, קשרי הידע והשיחות של גיא וחלץ דפוסים חוזרים בנקודות קצרות וברורות בנושאים הבאים:
   1. תנאים להצלחה ומוטיבציה (מה עוזר לו להיות במיטבו).
   2. טריגרים רגשיים וחסמים (מה מוציא אותו מאיזון - דגש על פערים בין הצהרות למציאות).
   3. סביבת עבודה ותקשורת (איך כדאי לו לגשת למשימות או לאנשים בהתבסס על הצלחות העבר).
   4. המלצות פרקטיות למניעה (מה הוא יכול לעשות כשמתחיל דפוס שלילי).
+
+  ${graphText}
+
+  ${TRIPLES_SCHEMA_INSTRUCTION}
 
   דרישות חובה:
   - כתוב בבוליטים (bullets) קצרים, חדים וברורים.
@@ -769,6 +1075,24 @@ export async function generateOperatingManual(allEntries: { transcript: string; 
   - כתוב בעברית בלבד.
   - התמקד במידע פרקטי ויישומי לטווח ארוך.
   
+  Return your response ONLY as a valid JSON object matching this structure:
+  {
+    "insight": "Your operating manual in Hebrew...",
+    "triples": [
+      {
+        "subject": "שם הישות",
+        "relation": "קשר",
+        "object": "מושא",
+        "domain": "Work/Family/Personal/Health/Finance/General",
+        "temporalContext": "Past/Present/Future",
+        "confidence": "Fact/Inference/Opinion",
+        "sentiment": 1/0/-1,
+        "subjectType": "Person/Project/Concept/Emotion/Other",
+        "objectType": "Person/Project/Concept/Emotion/Other"
+      }
+    ]
+  }
+
   החומר לניתוח:
   ${transcripts}
 
@@ -779,7 +1103,33 @@ export async function generateOperatingManual(allEntries: { transcript: string; 
     try {
         const result = await model.generateContent(prompt);
         const response = await result.response;
-        return response.text() || "לא הצלחתי לייצר את ספר ההפעלה כרגע.";
+        const parsed = parseAIResponse(response.text());
+        if (typeof parsed === 'string') return { insight: parsed, triples: [] };
+        
+        let finalInsight = parsed.insight || '';
+        if (typeof finalInsight === 'object' && finalInsight !== null) {
+            const obj = finalInsight;
+            let text = '';
+            if (obj.title) text += obj.title + '\n\n';
+            if (obj.introduction) text += obj.introduction + '\n\n';
+            if (Array.isArray(obj.sections)) {
+                obj.sections.forEach((sec: any) => {
+                    text += sec.title + '\n';
+                    if (Array.isArray(sec.bullets)) {
+                        sec.bullets.forEach((b: any) => {
+                            text += '- ' + b + '\n';
+                        });
+                    }
+                    text += '\n';
+                });
+            }
+            finalInsight = text.trim();
+        }
+
+        return {
+            insight: finalInsight,
+            triples: normalizeTriples(parsed.triples)
+        };
     } catch (error) {
         console.error("Error generating operating manual:", error);
         throw error;
@@ -791,10 +1141,14 @@ export async function generateOperatingManual(allEntries: { transcript: string; 
 export async function generateMajorInsights(
     allEntries: { transcript: string; timestamp: number }[], 
     apiKey: string,
-    currentInsights: string[] = []
-): Promise<string[]> {
+    currentInsights: string[] = [],
+    knowledgeGraph?: { nodes: any[]; edges: any[] }
+): Promise<{ insights: string[]; triples: OKFTriple[] }> {
     const genAI = getGenAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: activeModelName }, { apiVersion: activeApiVersion as any });
+    const model = genAI.getGenerativeModel({ 
+        model: activeModelName,
+        generationConfig: { responseMimeType: "application/json" }
+    }, { apiVersion: activeApiVersion as any });
 
     const weekStart = getStartOfCurrentWeek();
     
@@ -811,22 +1165,44 @@ export async function generateMajorInsights(
         .map((e) => `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`)
         .join('\n\n');
 
-    const prompt = `
-  אתה מומחה לניתוח פסיכולוגי ואימון אישי עבור "גיא" (Guy).
-  המשימה שלך היא לייצר בדיוק 4 תובנות עיקריות, קצרות ומדויקות (עד 3 שורות לכל אחת).
-  
-  התובנות הנדרשות:
-  1. תובנה גלובלית: ניתוח של כל חומר הגלם לאורך כל ההיסטוריה - זהה דפוס עומק או שינוי ארוך טווח.
-  2. תובנה שבועית: סיכום המגמות והאירועים מהשבוע האחרון בלבד.
-  3. תובנה משמעותית נבחרת: תובנה אחת שהמערכת בוחרת כחשובה ביותר כרגע.
-  4. תובנת תת מודע (Subconscious Insight): חשיפת קורלציות חבויות. האם יש נושא שורש רגשי שמנהל אותו מתחת לפני השטח בהתבסס על ההיסטוריה? (למשל: סטרס כלכלי שמתבטא בהפרעות שינה שימים אחרי מתבטא בכעס על נוה).
+    const graphText = buildGraphContext(knowledgeGraph);
 
+    const prompt = `
+  אתה אנליסט דפוסים אישי ומומחה בפסיכולוגיה קוגניטיבית של "גיא" (Guy).
+  המשימה שלך היא לייצר 4 תובנות על מרכזיות, מעמיקות ומשנות תפיסה (בעלות ערך טיפולי/אימוני עמוק).
+  
+  סוגי התובנות הנדרשים:
+  1. תובנת על גלובלית (Global Insight): תמה מרכזית שמנהלת אותו לאחרונה על סמך כלל היומנים והקשרים בגרף הידע.
+  2. תובנה מעשית/ביצועית (Execution Insight): זיהוי פערים בין כוונות למציאות והתנהלות סביב משימות.
+  3. תובנת מערכות יחסים (Relational Insight): תובנה על קשריו עם בני משפחתו וסביבתו.
+  4. תובנת תת מונע (Subconscious Insight): חשיפת קורלציות חבויות. האם יש נושא שורש רגשי שמנהל אותו מתחת לפני השטח בהתבסס על ההיסטוריה וקשרי הידע החדשים?
+  
   דרישות חובה:
   - פנה למשתמש ישירות בגוף שני ("אתה").
   - כתוב בעברית בלבד.
   - כל תובנה חייבת להיות קצרה (3 שורות מקסימום).
   - אל תכתוב כותרות כמו "תובנה גלובלית:", פשוט את הטקסט עצמו.
-  - החזר את התשובה בפורמט JSON של מערך מחרוזות אורך 4 בדיוק: ["טקסט 1", "טקסט 2", "טקסט 3", "טקסט 4"]
+
+  ${graphText}
+
+  ${TRIPLES_SCHEMA_INSTRUCTION}
+  החזר את התשובה בפורמט JSON אובייקט עם "insights" (מערך מחרוזות) ו-"triples". דוגמה:
+  {
+    "insights": ["טקסט 1", ...],
+    "triples": [
+      {
+        "subject": "שם הישות",
+        "relation": "קשר",
+        "object": "מושא",
+        "domain": "Work/Family/Personal/Health/Finance/General",
+        "temporalContext": "Past/Present/Future",
+        "confidence": "Fact/Inference/Opinion",
+        "sentiment": 1/0/-1,
+        "subjectType": "Person/Project/Concept/Emotion/Other",
+        "objectType": "Person/Project/Concept/Emotion/Other"
+      }
+    ]
+  }
 
   חומר שבועי:
   ${weeklyTranscripts || "אין מספיק נתונים מהשבוע."}
@@ -848,9 +1224,95 @@ export async function generateMajorInsights(
     try {
         const result = await model.generateContent(prompt);
         const response = await result.response;
-        return parseAIResponse(response.text());
+        const parsed = parseAIResponse(response.text());
+        if (Array.isArray(parsed)) return { insights: parsed, triples: [] };
+        return {
+            insights: parsed.insights || [],
+            triples: normalizeTriples(parsed.triples)
+        };
     } catch (error) {
         console.error("Error generating major insights:", error);
         throw error;
+    }
+}
+
+
+export async function generateBiDailyThreads(
+    allEntries: { id: string; transcript: string; timestamp: number }[],
+    knowledgeGraph: { nodes: any[]; edges: any[] },
+    apiKey: string
+): Promise<{ threads: string[]; triples: OKFTriple[] }> {
+    const genAI = getGenAI(apiKey);
+    const model = genAI.getGenerativeModel({ 
+        model: activeModelName,
+        generationConfig: { responseMimeType: "application/json" }
+    }, { apiVersion: activeApiVersion as any });
+
+    const fortyEightHoursAgo = Date.now() - 48 * 60 * 60 * 1000;
+    const newEntries = allEntries.filter(e => e.timestamp >= fortyEightHoursAgo);
+    
+    if (newEntries.length === 0) { return { threads: [], triples: [] }; }
+
+    // Filter edges from the last 48 hours to pass as OKF context
+    const recentEdges = knowledgeGraph.edges.filter(e => e.timestamp && e.timestamp >= fortyEightHoursAgo);
+    const recentEdgesStr = recentEdges.map(e => `- [${e.source}] --(${e.relation})--> [${e.target}]`).join('\n');
+
+    const recentTranscripts = newEntries
+        .map(e => `[Entry Date: ${new Date(e.timestamp).toLocaleString('he-IL')}]: ${e.transcript}`)
+        .join('\n\n');
+
+    const prompt = `
+  You are an expert personal growth coach and analyst for "גיא" (Guy).
+  Your task is to identify key unresolved thoughts, dilemmas, or active intentions Guy wants to resolve or advance.
+  Instead of doing this per-entry, you are scanning the new developments from the last 48 hours.
+  
+  We are using the OKF (Obsidian Knowledge Folder) structure. Here are the NEW relations/concepts that were added to Guy's Knowledge Graph in the last 48 hours:
+  ${recentEdgesStr || 'No new graph relationships.'}
+  
+  And here are the transcripts of the diary entries from the last 48 hours:
+  ${recentTranscripts}
+  
+  Analyze the new graph relations and the diary transcripts. Extract up to 4 of the MOST IMPORTANT and critical unresolved open threads or dilemmas.
+  
+  ${TRIPLES_SCHEMA_INSTRUCTION}
+
+  Rules:
+  1. Return a maximum of 4 open threads. Only choose the ones that carry significant emotional weight, recurrent conflict, or are key decisions.
+  2. Phrase them as a short reflective statement or question in Hebrew (e.g., 'איך לקדם את השיחה מול הבוס?' or 'הרצון למצוא זמן שקט לעצמי').
+  3. Avoid simple lists of tasks (e.g., "buy milk"). Focus on the underlying intention or psychological dilemma.
+  4. Return the result in clear JSON format containing "threads" (array of strings) and "triples" (new OKF relations). Example:
+  {
+    "threads": ["חוט 1"],
+    "triples": [
+      {
+        "subject": "שם הישות",
+        "relation": "קשר",
+        "object": "מושא",
+        "domain": "Work/Family/Personal/Health/Finance/General",
+        "temporalContext": "Past/Present/Future",
+        "confidence": "Fact/Inference/Opinion",
+        "sentiment": 1/0/-1,
+        "subjectType": "Person/Project/Concept/Emotion/Other",
+        "objectType": "Person/Project/Concept/Emotion/Other"
+      }
+    ]
+  }
+  
+  הקשר קבוע לגבי בני משפחה:
+  ${FIXED_CONTEXT}
+  `;
+
+    try {
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const parsed = parseAIResponse(response.text());
+        if (Array.isArray(parsed)) return { threads: parsed, triples: [] };
+        return {
+            threads: parsed.threads || [],
+            triples: normalizeTriples(parsed.triples)
+        };
+    } catch (error) {
+        console.error("Error generating bi-daily threads:", error);
+        return { threads: [], triples: [] };
     }
 }
