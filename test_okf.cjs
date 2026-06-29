@@ -32,10 +32,27 @@ function convertToOKF(dataJsonPath) {
     if (!fs.existsSync(graphDir)) fs.mkdirSync(graphDir);
 
     let rawData;
-    try {
-        rawData = fs.readFileSync(dataJsonPath, 'utf-8');
-    } catch (e) {
-        console.log(`[!] Could not read ${dataJsonPath}. Let's create some dummy data to test the OKF structure.`);
+    const pathsToTry = [
+        dataJsonPath,
+        path.join(__dirname, 'public', 'diary_state.json'),
+        path.join(__dirname, 'diary_state (5).json'),
+        path.join(__dirname, 'diary_state.json')
+    ];
+
+    for (const p of pathsToTry) {
+        if (fs.existsSync(p)) {
+            try {
+                rawData = fs.readFileSync(p, 'utf-8');
+                console.log(`[-] Successfully read data from: ${p}`);
+                break;
+            } catch (err) {
+                console.warn(`[!] Failed to read path: ${p}`, err);
+            }
+        }
+    }
+
+    if (!rawData) {
+        console.log(`[!] Could not read any data file. Creating dummy data.`);
         rawData = JSON.stringify({
             state: {
                 entries: [
@@ -49,16 +66,17 @@ function convertToOKF(dataJsonPath) {
                     {
                         id: 'dummy2',
                         timestamp: Date.now(),
-                        transcript: "Had a great family dinner. Feeling refreshed.",
+                        transcript: "Had a great family dinner with Tali.",
                         topics: ["Family", "Relaxation"],
                         openThreads: []
                     }
                 ],
                 knowledgeGraph: {
                     nodes: [
-                        { id: 'work', label: 'Work', val: 1.5 },
-                        { id: 'ai', label: 'AI', val: 1.2 },
-                        { id: 'family', label: 'Family', val: 2.0 }
+                        { id: 'work', label: 'Work', val: 1.5, type: 'Concept' },
+                        { id: 'ai', label: 'AI', val: 1.2, type: 'Concept' },
+                        { id: 'family', label: 'Family', val: 2.0, type: 'Concept' },
+                        { id: 'טלי', label: 'טלי', val: 1.0, type: 'Person' }
                     ],
                     edges: [
                         { source: 'work', target: 'ai', relation: 'involves', timestamp: Date.now() }
@@ -73,6 +91,81 @@ function convertToOKF(dataJsonPath) {
     const appState = JSON.parse(rawData);
     // Zustand persist stores data under 'state'
     const state = appState.state || appState;
+
+    // Reconstruct knowledge graph from entry triples if it is missing or empty
+    if (!state.knowledgeGraph || !state.knowledgeGraph.nodes || state.knowledgeGraph.nodes.length === 0) {
+        console.log("[-] Knowledge graph empty/missing. Reconstructing from entry triples...");
+        const nodesMap = new Map();
+        const edges = [];
+        const entries = state.entries || [];
+        const peopleList = ['טלי', 'גיל', 'איתן', 'נוה', 'אמא', 'אבא', 'אסף'];
+
+        entries.forEach(entry => {
+            if (!entry.triples) return;
+            entry.triples.forEach(t => {
+                let subject = '';
+                let relation = '';
+                let object = '';
+                let subjectType = 'Other';
+                let objectType = 'Other';
+
+                if (Array.isArray(t)) {
+                    subject = t[0] || '';
+                    relation = t[1] || '';
+                    object = t[2] || '';
+                } else if (typeof t === 'object') {
+                    subject = t.subject || '';
+                    relation = t.relation || '';
+                    object = t.object || '';
+                    subjectType = t.subjectType || 'Other';
+                    objectType = t.objectType || 'Other';
+                }
+
+                subject = subject.trim();
+                object = object.trim();
+                relation = relation.trim();
+
+                if (!subject || !object) return;
+
+                // Determine if a node represents a Person
+                if (peopleList.some(p => subject.includes(p)) || subjectType === 'Person') {
+                    subjectType = 'Person';
+                }
+                if (peopleList.some(p => object.includes(p)) || objectType === 'Person') {
+                    objectType = 'Person';
+                }
+
+                if (!nodesMap.has(subject)) {
+                    nodesMap.set(subject, { id: subject, label: subject, val: 1, type: subjectType });
+                } else {
+                    const node = nodesMap.get(subject);
+                    node.val += 0.1;
+                    if (subjectType !== 'Other') node.type = subjectType;
+                }
+
+                if (!nodesMap.has(object)) {
+                    nodesMap.set(object, { id: object, label: object, val: 1, type: objectType });
+                } else {
+                    const node = nodesMap.get(object);
+                    node.val += 0.1;
+                    if (objectType !== 'Other') node.type = objectType;
+                }
+
+                edges.push({
+                    source: subject,
+                    target: object,
+                    relation: relation,
+                    timestamp: entry.timestamp
+                });
+            });
+        });
+
+        state.knowledgeGraph = {
+            nodes: Array.from(nodesMap.values()),
+            edges: edges
+        };
+        console.log(`[-] Reconstructed knowledge graph with ${state.knowledgeGraph.nodes.length} nodes and ${state.knowledgeGraph.edges.length} edges.`);
+    }
 
     // 1. Process Entries
     if (state.entries) {
@@ -96,19 +189,22 @@ function convertToOKF(dataJsonPath) {
     // 2. Process Knowledge Graph Nodes
     if (state.knowledgeGraph && state.knowledgeGraph.nodes) {
         state.knowledgeGraph.nodes.forEach(node => {
-            const filename = path.join(graphDir, `${node.id}.md`);
+            // Sanitize node ID for filename (avoiding forward slashes, etc.)
+            const safeNodeId = node.id.replace(/[\/\\?%*:|"<>\s]/g, '_');
+            const filename = path.join(graphDir, `${safeNodeId}.md`);
             
             // Find related edges
             const relatedEdges = (state.knowledgeGraph.edges || []).filter(e => e.source === node.id || e.target === node.id);
             const links = relatedEdges.map(e => {
                 const targetNode = e.source === node.id ? e.target : e.source;
-                return `- [[${targetNode}]] (${e.relation})`;
+                const safeTargetNode = targetNode.replace(/[\/\\?%*:|"<>\s]/g, '_');
+                return `- [[${safeTargetNode}]] (${e.relation})`;
             });
 
             const frontmatter = {
-                type: 'Concept',
+                type: node.type || 'Concept',
                 id: node.id,
-                weight: node.val || 1
+                weight: Number(node.val ? node.val.toFixed(2) : 1)
             };
 
             let content = `${jsonToYamlFrontmatter(frontmatter)}\n# ${node.label}\n\n`;

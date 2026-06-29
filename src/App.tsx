@@ -4,28 +4,23 @@ import {
   Send,
   User,
   History as HistoryIcon,
-  CheckCircle2,
   ChevronDown,
   ChevronUp,
   Brain,
   Notebook,
   Loader2,
-  RefreshCw,
   Trash2,
   Square,
   X,
   Star,
   Cloud,
-  Check,
-  Sparkles,
   Activity,
   Lightbulb,
   Briefcase,
   Home,
   Heart,
   Pencil,
-  Quote,
-  Compass
+  Quote
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -35,9 +30,7 @@ import {
   generateWeeklyBriefing,
   generateCategoricalInsights,
   generateLifeThemesAnalysis,
-  analyzeExecutionGap,
   generateEmotionalGTDInsight,
-  generateOperatingManual,
 
   generateMajorInsights,
   generateAdvices,
@@ -65,11 +58,20 @@ export function cn(...inputs: ClassValue[]) {
 
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'home' | 'actions' | 'insights' | 'dashboard' | 'history'>('home');
-  const { apiKey, setApiKey, entries, preferredModel, preferredApiVersion, setPreferredModel, loadInitialState, syncStatus } = useAppStore();
+  const [activeTab, setActiveTab] = useState<'home' | 'insights' | 'dashboard' | 'history'>('home');
+  const { apiKey, setApiKey, entries, preferredModel, preferredApiVersion, setPreferredModel, loadInitialState, syncStatus, syncError } = useAppStore();
   const [showKeyModal, setShowKeyModal] = useState(false);
+  const [syncUid, setSyncUid] = useState('');
   const [isTestingKey, setIsTestingKey] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [isTestingDb, setIsTestingDb] = useState(false);
+  const [dbTestResult, setDbTestResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  useEffect(() => {
+    if (showKeyModal) {
+      setSyncUid(localStorage.getItem('firebase_sync_uid') || '');
+    }
+  }, [showKeyModal]);
   // Google Drive state variables removed
   const [isStandalone, setIsStandalone] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
@@ -226,12 +228,10 @@ export default function App() {
     return result;
   }, [entries]);
 
-  // Advanced Insights Logic (Life Themes, Shadow Work, Emotional GTD)
+  // Advanced Insights Logic (Life Themes, Emotional GTD)
   const {
     lifeThemes, setLifeThemes,
-    shadowWork, setShadowWork,
     dailyGtd, setDailyGtd,
-    operatingManual, setOperatingManual,
     majorInsights, setMajorInsights,
     lastMajorInsightsCount, setLastMajorInsightsCount,
     advices, setAdvices,
@@ -261,34 +261,14 @@ export default function App() {
         }
       }
 
-      // 2. Personal Operating Manual (Update on Thursdays, or on first run / if placeholder is active)
-      const isManualPlaceholder = operatingManual?.insight?.includes("עדיין אין מספיק נתונים") || operatingManual?.insight?.includes("הדפוסים שלך מתגבשים");
-      if ((!operatingManual?.insight || isManualPlaceholder || (dayOfWeek === 4 && operatingManual?.lastDate !== todayStr))) {
-        try {
-          const { knowledgeGraph, addTriples } = useAppStore.getState();
-          const { insight: manual, triples } = await generateOperatingManual(entries, apiKey, knowledgeGraph);
-          setOperatingManual({ insight: manual, lastDate: todayStr });
-          if (triples && triples.length > 0) {
-            addTriples(triples, Date.now());
-          }
-        } catch (e) {
-          console.error("Operating Manual error:", e);
-        }
-      }
-
-      // 2. Weekly Life Themes (Friday) & Execution Gap Analysis
-      if (dayOfWeek === 1 && (lifeThemes?.lastWeeklyDate !== todayStr || shadowWork?.lastDate !== todayStr)) {
+      // 2. Weekly Life Themes (Friday)
+      if (dayOfWeek === 1 && lifeThemes?.lastWeeklyDate !== todayStr) {
         try {
           const { knowledgeGraph, addTriples } = useAppStore.getState();
           const { insight: themes, triples: themesTriples } = await generateLifeThemesAnalysis(entries, apiKey, 'weekly', knowledgeGraph);
-          const { insight: gapReport, triples: gapTriples } = await analyzeExecutionGap(entries, apiKey, knowledgeGraph);
           setLifeThemes({ ...lifeThemes, weekly: themes, lastWeeklyDate: todayStr });
-          setShadowWork({ insight: gapReport, lastDate: todayStr });
           if (themesTriples && themesTriples.length > 0) {
             addTriples(themesTriples, Date.now());
-          }
-          if (gapTriples && gapTriples.length > 0) {
-            addTriples(gapTriples, Date.now());
           }
         } catch (e) {
           console.error("Weekly analysis error:", e);
@@ -350,12 +330,12 @@ export default function App() {
           console.error("Failed to generate advices:", e);
         }
       }
-      // 7. Quote Insights (Triggered once every 2 days if quotes exist)
+      // 7. Quote Insights (Triggered once every 2 days if quotes exist and initial ones were loaded)
       const lastQuoteUpdate = quoteInsights?.lastUpdateDate ? new Date(quoteInsights.lastUpdateDate) : null;
       const todayDate = new Date();
       const diffDays = lastQuoteUpdate ? (todayDate.getTime() - lastQuoteUpdate.getTime()) / (1000 * 3600 * 24) : Infinity;
 
-      if (diffDays >= 2 && extractedQuotes.length > 0) {
+      if (quoteInsights?.lastUpdateDate && diffDays >= 2 && extractedQuotes.length > 0) {
         try {
           const { knowledgeGraph, addTriples } = useAppStore.getState();
           const existing = quoteInsights?.insights || [];
@@ -377,7 +357,7 @@ export default function App() {
 
     const timeoutId = setTimeout(runAdvancedAnalysis, 10000);
     return () => clearTimeout(timeoutId);
-  }, [entries.length, apiKey, dailyGtd?.lastDate, lifeThemes?.lastWeeklyDate, lifeThemes?.lastMonthlyDate, shadowWork?.lastDate, operatingManual?.lastDate, advices?.lastEntryCount, quoteInsights?.lastUpdateDate, extractedQuotes.length, shadowWork?.insight, lastMajorInsightsCount]);
+  }, [entries.length, apiKey, dailyGtd?.lastDate, lifeThemes?.lastWeeklyDate, lifeThemes?.lastMonthlyDate, advices?.lastEntryCount, quoteInsights?.lastUpdateDate, extractedQuotes.length, lastMajorInsightsCount]);
 
 
 
@@ -417,6 +397,37 @@ export default function App() {
     setIsTestingKey(false);
   };
 
+  const handleTestDatabase = async () => {
+    setIsTestingDb(true);
+    setDbTestResult(null);
+    try {
+      const { FirebaseStorageService } = await import('./services/FirebaseStorageService');
+      const uid = await FirebaseStorageService.init();
+      const { doc, setDoc, deleteDoc, getDoc } = await import('firebase/firestore');
+      const { db } = await import('./services/firebase');
+      const testDocRef = doc(db, `users/${uid}/diagnostics`, 'connection_test');
+      await setDoc(testDocRef, {
+        timestamp: Date.now(),
+        status: 'OK',
+        testBy: 'Client Diagnostic Button'
+      });
+      const snap = await getDoc(testDocRef);
+      if (!snap.exists() || snap.data()?.status !== 'OK') {
+        throw new Error("נכתב מסמך בדיקה אך לא נקרא בחזרה בצורה תקינה.");
+      }
+      await deleteDoc(testDocRef);
+      setDbTestResult({ success: true, message: `חיבור למסד הנתונים תקין! מזהה משתמש: ${uid}` });
+    } catch (err: any) {
+      console.error("Database connection test failed:", err);
+      setDbTestResult({ 
+        success: false, 
+        message: `שגיאת חיבור: ${err.message || err.code || JSON.stringify(err)}` 
+      });
+    } finally {
+      setIsTestingDb(false);
+    }
+  };
+
   const toggleLiveChat = async (customInstruction?: string) => {
     if (!apiKey) {
       setShowKeyModal(true);
@@ -427,7 +438,7 @@ export default function App() {
       liveServiceRef.current?.stop();
       setIsLiveActive(false);
     } else {
-      const { weeklyInsight, dailyGtd, shadowWork, lifeThemes } = useAppStore.getState();
+      const { weeklyInsight, dailyGtd, lifeThemes } = useAppStore.getState();
 
       const socraticInstruction = `
 אתה מאמן סוקרטי מתקדם וחד בשם 'ענן המחשבות'. דבר בעברית בלבד.
@@ -445,7 +456,6 @@ export default function App() {
 הקשר נוכחי:
 ${weeklyInsight ? `- תובנה שבועית (כולל צד הצל): ${weeklyInsight}` : ''}
 ${dailyGtd?.insight ? `- GTD רגשי להיום: ${dailyGtd.insight}` : ''}
-${shadowWork?.insight ? `- נקודת עבודה (Shadow Work): ${shadowWork.insight}` : ''}
 ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחרון: ${lifeThemes.weekly}` : ''}
 
 הנחיות לאימון אקטיבי:
@@ -611,25 +621,33 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
         </div>
         <div className="flex items-center gap-2">
           {syncStatus === 'saving' && (
-            <span className="text-[10px] text-white/40 hidden xs:inline">שומר בענן...</span>
+            <span className="text-[10px] text-white/40 hidden xs:inline">מסתנכרן עם הענן...</span>
           )}
           {syncStatus === 'synced' && (
             <span className="text-[10px] text-emerald-400/80 hidden xs:inline">הנתונים שמורים בענן</span>
           )}
           {syncStatus === 'error' && (
-            <span className="text-[10px] text-red-400 hidden xs:inline">שגיאה בשמירה בענן</span>
+            <span className="text-[10px] text-red-400 hidden xs:inline">שגיאה בסנכרון לענן</span>
           )}
-          <div
+          <button
+            onClick={async () => {
+              try {
+                await loadInitialState();
+              } catch (err) {
+                console.error("Manual sync failed:", err);
+              }
+            }}
+            disabled={syncStatus === 'saving'}
             className={cn(
-              "w-10 h-10 rounded-xl flex items-center justify-center transition-all border",
-              syncStatus === 'synced' && "bg-[#DCFCE7]/20 text-emerald-400 border-emerald-500/20",
-              syncStatus === 'saving' && "bg-amber-500/10 text-amber-400 border-amber-500/20",
-              syncStatus === 'error' && "bg-red-500/10 text-red-400 border-red-500/20"
+              "w-10 h-10 rounded-xl flex items-center justify-center transition-all border hover:scale-105 active:scale-95",
+              syncStatus === 'synced' && "bg-[#DCFCE7]/20 text-emerald-400 border-emerald-500/20 hover:bg-[#DCFCE7]/30",
+              syncStatus === 'saving' && "bg-amber-500/10 text-amber-400 border-amber-500/20 cursor-not-allowed",
+              syncStatus === 'error' && "bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/20"
             )}
             title={
-              syncStatus === 'synced' ? "הנתונים מסונכרנים ל-Firebase" : 
-              syncStatus === 'saving' ? "שומר שינויים ב-Firebase..." : 
-              "שגיאה בסנכרון מול Firebase"
+              syncStatus === 'synced' ? "הנתונים מסונכרנים ל-Firebase. לחץ לסנכרון ידני." : 
+              syncStatus === 'saving' ? "מסתנכרן מול Firebase..." : 
+              "שגיאה בסנכרון. לחץ לסנכרון מחדש."
             }
           >
             {syncStatus === 'saving' ? (
@@ -644,7 +662,7 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
                 )} 
               />
             )}
-          </div>
+          </button>
           <button
             onClick={() => setShowKeyModal(true)}
             className="w-10 h-10 bg-white rounded-xl flex items-center justify-center text-[#0D3B66] shadow-md border border-gray-100 hover:bg-gray-50 transition-all"
@@ -772,12 +790,6 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
             handleToggleVoice={handleToggleVoice}
           />
         )}
-        {activeTab === 'actions' && (
-          <OpenThreadsTab 
-            setActiveTab={setActiveTab}
-            setInput={setInput}
-          />
-        )}
         {activeTab === 'insights' && (
           <InsightsTab 
             isLiveActive={isLiveActive} 
@@ -799,7 +811,6 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
       <div className="fixed bottom-0 left-0 right-0 z-[100] flex justify-center px-6 pb-[env(safe-area-inset-bottom,24px)] pointer-events-none">
         <nav className="w-full h-20 bg-[#0D3B66]/80 backdrop-blur-3xl rounded-[2.5rem] flex justify-around items-center px-4 shadow-2xl border border-white/10 pointer-events-auto" dir="rtl">
           <NavItem id="home" label="בית" isActive={activeTab === 'home'} onClick={() => setActiveTab('home')} />
-          <NavItem id="actions" label="חוטים" isActive={activeTab === 'actions'} onClick={() => setActiveTab('actions')} />
           <NavItem id="insights" label="תובנות" isActive={activeTab === 'insights'} onClick={() => setActiveTab('insights')} />
           <NavItem id="dashboard" label="מבט על" isActive={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
           <NavItem id="history" label="יומן" isActive={activeTab === 'history'} onClick={() => setActiveTab('history')} />
@@ -829,17 +840,41 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
               </p>
             </div>
 
-            <input
-              type="text"
-              placeholder="Gemini API Key..."
-              defaultValue={apiKey}
-              onChange={(e) => {
-                setApiKey(e.target.value);
-                setTestResult(null);
-              }}
-              className="w-full bg-white border border-gray-300 rounded-xl py-3 px-4 mb-2 text-left font-mono text-xs focus:ring-2 focus:ring-[#0A3B66] outline-none shadow-sm"
-              dir="ltr"
-            />
+             <div className="mb-4">
+              <label className="block text-xs font-bold mb-1 text-gray-500">מפתח Gemini API</label>
+              <input
+                type="text"
+                placeholder="Gemini API Key..."
+                defaultValue={apiKey}
+                onChange={(e) => {
+                  setApiKey(e.target.value);
+                  setTestResult(null);
+                }}
+                className="w-full bg-white border border-gray-300 rounded-xl py-3 px-4 text-left font-mono text-xs focus:ring-2 focus:ring-[#0A3B66] outline-none shadow-sm"
+                dir="ltr"
+              />
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-xs font-bold mb-1 text-gray-500">מזהה סנכרון (Sync User ID)</label>
+              <input
+                type="text"
+                placeholder="מזהה סנכרון ייחודי..."
+                value={syncUid}
+                onChange={(e) => setSyncUid(e.target.value)}
+                className="w-full bg-white border border-gray-300 rounded-xl py-3 px-4 text-left font-mono text-xs focus:ring-2 focus:ring-[#0A3B66] outline-none shadow-sm"
+                dir="ltr"
+              />
+              <p className="text-[10px] text-gray-400 mt-1">
+                תוכל להעתיק מזהה זה למכשירים אחרים כדי לשתף ולסנכרן את רשומות היומן שלך בענן.
+              </p>
+            </div>
+
+            {syncError && (
+              <div className="bg-red-50 border border-red-100 rounded-xl p-3 mb-4 text-xs text-red-800 text-right leading-relaxed">
+                ⚠️ <strong>שגיאת סנכרון אחרונה:</strong> {syncError}
+              </div>
+            )}
 
             {testResult && (
               <p className={cn(
@@ -850,17 +885,45 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
               </p>
             )}
 
-            <div className="flex gap-3">
+            {dbTestResult && (
+              <p className={cn(
+                "text-xs mb-4 font-bold text-center animate-in fade-in slide-in-from-top-1",
+                dbTestResult.success ? "text-emerald-600" : "text-red-600"
+              )}>
+                {dbTestResult.message}
+              </p>
+            )}
+
+            <div className="flex gap-2 mb-4">
               <button
                 onClick={() => handleTestKey(apiKey)}
                 disabled={isTestingKey || !apiKey}
-                className="flex-1 bg-gray-100 text-[#0A3B66] border border-gray-300 rounded-xl py-3 font-semibold hover:bg-gray-200 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                className="flex-1 bg-gray-100 text-[#0A3B66] border border-gray-300 rounded-xl py-2 text-xs font-semibold hover:bg-gray-200 transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
               >
-                {isTestingKey ? <Loader2 size={16} className="animate-spin" /> : "בדיקת תקינות"}
+                {isTestingKey ? <Loader2 size={14} className="animate-spin" /> : "בדיקת API Key"}
               </button>
               <button
-                onClick={() => setShowKeyModal(false)}
-                className="flex-[1.5] bg-[#0A3B66] text-white rounded-xl py-3 font-semibold hover:bg-[#082b4a] transition-colors shadow-md"
+                onClick={handleTestDatabase}
+                disabled={isTestingDb}
+                className="flex-1 bg-gray-100 text-[#0A3B66] border border-gray-300 rounded-xl py-2 text-xs font-semibold hover:bg-gray-200 transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
+              >
+                {isTestingDb ? <Loader2 size={14} className="animate-spin" /> : "בדיקת מסד נתונים"}
+              </button>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={async () => {
+                  const currentUid = localStorage.getItem('firebase_sync_uid') || '';
+                  const targetUid = syncUid.trim();
+                  if (targetUid && targetUid !== currentUid) {
+                    const { FirebaseStorageService } = await import('./services/FirebaseStorageService');
+                    FirebaseStorageService.setCustomUid(targetUid);
+                    await loadInitialState();
+                  }
+                  setShowKeyModal(false);
+                }}
+                className="w-full bg-[#0A3B66] text-white rounded-xl py-3 font-semibold hover:bg-[#082b4a] transition-colors shadow-md"
               >
                 שמור וסגור
               </button>
@@ -1201,137 +1264,7 @@ function HomeTab({
   );
 }
 
-function OpenThreadsTab({ 
-  setActiveTab, 
-  setInput 
-}: { 
-  setActiveTab: (tab: 'home' | 'actions' | 'insights' | 'dashboard' | 'history') => void;
-  setInput: (val: string) => void;
-}) {
-  const { globalThreads, toggleThreadResolution, removeThread } = useAppStore();
-  
-  const allThreads = globalThreads || [];
 
-  const activeThreads = allThreads.filter(t => !t.isResolved);
-  const resolvedThreads = allThreads.filter(t => t.isResolved);
-
-  const handleReflect = (text: string) => {
-    setInput(`היי, ביומן שלי עלה החוט הבא: "${text}". תוכל לעזור לי להרהר בזה ולשאול אותי שאלות סוקרטיות כדי לקדם או לפתור אותו?`);
-    setActiveTab('insights');
-  };
-
-  const renderThread = (item: any, idx: number, isResolvedList: boolean) => (
-    <div 
-      key={`${item.id}-${item.text}-${idx}`} 
-      className={cn(
-        "backdrop-blur-3xl rounded-[2rem] p-5 flex flex-col sm:flex-row sm:items-center justify-between border shadow-2xl group transition-all gap-4",
-        isResolvedList 
-          ? "bg-white/5 border-white/5 opacity-55 hover:opacity-80"
-          : "bg-[#0D3B66]/40 border-white/10 hover:bg-[#0D3B66]/50 hover:border-white/20"
-      )}
-    >
-      <div className="flex items-start gap-4 flex-1">
-        <div className={cn(
-          "w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 border",
-          isResolvedList
-            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
-            : "bg-white/5 text-white/40 border-white/5"
-        )}>
-          {isResolvedList ? <Check size={18} /> : <Compass size={18} className="animate-pulse" />}
-        </div>
-        <div className="flex flex-col space-y-1">
-          <span className={cn(
-            "text-sm font-medium leading-relaxed text-right",
-            isResolvedList ? "text-white/50 line-through" : "text-white"
-          )}>
-            {item.text}
-          </span>
-        </div>
-      </div>
-      
-      <div className="flex items-center justify-end gap-2 shrink-0">
-        {!isResolvedList && (
-          <button
-            onClick={() => handleReflect(item.text)}
-            className="px-4 py-2 rounded-2xl bg-white/5 hover:bg-white/10 text-xs font-semibold text-white/70 hover:text-white flex items-center gap-1.5 border border-white/5 transition-all active:scale-95"
-            title="הרהר בחוט זה עם ה-AI"
-          >
-            <Sparkles size={14} className="text-[#FFD54F]" />
-            <span>הרהר</span>
-          </button>
-        )}
-        
-        <button 
-          onClick={() => toggleThreadResolution(item.id)}
-          className={cn(
-            "px-4 py-2 rounded-2xl text-xs font-bold flex items-center gap-1.5 transition-all border active:scale-95",
-            isResolvedList
-              ? "bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border-amber-500/20"
-              : "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/20"
-          )}
-        >
-          <CheckCircle2 size={14} />
-          <span>{isResolvedList ? "פתח מחדש" : "קצה נסגר"}</span>
-        </button>
-
-        <button 
-          onClick={() => {
-            if (window.confirm(`האם למחוק לחלוטין את החוט הבא: "${item.text}"?`)) {
-              removeThread(item.id);
-            }
-          }}
-          className="w-10 h-10 rounded-2xl bg-red-500/10 hover:bg-red-500/20 text-red-400 flex items-center justify-center border border-red-500/10 transition-all opacity-0 group-hover:opacity-100 active:scale-95"
-          title="מחק חוט"
-        >
-          <Trash2 size={16} />
-        </button>
-      </div>
-    </div>
-  );
-
-  return (
-    <div className="w-full flex flex-col space-y-6 pb-24" dir="rtl">
-      <div className="flex items-center justify-between px-2">
-        <h2 className="text-xl font-bold flex items-center gap-3 text-white/90">
-          <div className="w-10 h-10 rounded-2xl bg-[#FFD54F]/20 flex items-center justify-center text-[#FFD54F] ml-2">
-            <Compass size={22} />
-          </div>
-          חוטים במחשבה
-        </h2>
-      </div>
-
-      {allThreads.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center text-center p-12 bg-white/5 rounded-[3rem] border border-dashed border-white/10">
-          <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center text-white/10 mb-4">
-            <Compass size={40} strokeWidth={1} />
-          </div>
-          <p className="text-white/40 font-medium">אין חוטים פתוחים כרגע.</p>
-          <p className="text-white/20 text-xs mt-1">הם ייווצרו אוטומטית כשתשתף דילמות או כוונות בהקלטות היומן שלך.</p>
-        </div>
-      ) : (
-        <div className="flex-1 space-y-8 pr-1">
-          {activeThreads.length > 0 && (
-            <div className="space-y-4">
-              <h3 className="text-[10px] font-bold text-[#FFD54F] uppercase tracking-[0.2em] px-4">חוטים פעילים</h3>
-              <div className="space-y-3">
-                {activeThreads.map((t, i) => renderThread(t, i, false))}
-              </div>
-            </div>
-          )}
-
-          {resolvedThreads.length > 0 && (
-            <div className="space-y-4">
-              <h3 className="text-[10px] font-bold text-emerald-400 uppercase tracking-[0.2em] px-4">קצוות שנסגרו</h3>
-              <div className="space-y-3">
-                {resolvedThreads.map((t, i) => renderThread(t, i, true))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function InsightsTab({ 
   isLiveActive,
@@ -1353,16 +1286,13 @@ function InsightsTab({
   const { 
     majorInsights, setMajorInsights,
     chatMessages, apiKey, entries,
-    dailyGtd, quoteInsights,
-    operatingManual, setOperatingManual, shadowWork, advices,
+    dailyGtd, quoteInsights, advices,
     updateEntry, removeEntry
   } = useAppStore();
   const [showMajorInsights, setShowMajorInsights] = useState(false);
   const [showAllTimeInsights, setShowAllTimeInsights] = useState(false);
   const [isGeneratingMajor, setIsGeneratingMajor] = useState(false);
   const [isChatExpanded, setIsChatExpanded] = useState(false);
-  const [isManualExpanded, setIsManualExpanded] = useState(false);
-  const [isGapExpanded, setIsGapExpanded] = useState(false);
   const [isAdvicesExpanded, setIsAdvicesExpanded] = useState(false);
   const [isQuotesExpanded, setIsQuotesExpanded] = useState(false);
   const [isQuoteInsightsExpanded, setIsQuoteInsightsExpanded] = useState(false);
@@ -1388,25 +1318,6 @@ function InsightsTab({
     }
   };
 
-  const [isGeneratingManual, setIsGeneratingManual] = useState(false);
-
-  const handleGenerateManual = async () => {
-    if (!apiKey || entries.length === 0) return;
-    setIsGeneratingManual(true);
-    try {
-      const { knowledgeGraph, addTriples } = useAppStore.getState();
-      const { insight: manual, triples } = await generateOperatingManual(entries, apiKey, knowledgeGraph);
-      const todayStr = new Date().toLocaleDateString('en-CA');
-      setOperatingManual({ insight: manual, lastDate: todayStr });
-      if (triples && triples.length > 0) {
-        addTriples(triples, Date.now());
-      }
-    } catch (err) {
-      console.error("Manual playbook generation error:", err);
-    } finally {
-      setIsGeneratingManual(false);
-    }
-  };
 
   useEffect(() => {
     if (majorInsights.length === 0 && entries.length > 0 && apiKey) {
@@ -1654,130 +1565,6 @@ function InsightsTab({
         )}
       </div>
 
-
-      {/* Operating Manual Section */}
-      <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all relative group mt-4">
-        <button 
-          onClick={() => setIsManualExpanded(!isManualExpanded)}
-          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors relative z-10 text-right"
-        >
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-[#FFC107] rounded-2xl flex items-center justify-center text-[#0A3B66] shadow-[0_0_20px_rgba(255,213,79,0.4)] group-hover:rotate-12 transition-transform">
-              <Notebook size={24} />
-            </div>
-            <div className="text-right">
-              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">ספר ההפעלה שלי</span>
-              <span className="block text-xs text-[#0A3B66]/60 uppercase tracking-widest mt-1">מבוסס חודש אחרון</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-3 text-[#0A3B66]/30 relative z-20">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                handleGenerateManual();
-              }}
-              disabled={isGeneratingManual || !apiKey || entries.length === 0}
-              className="text-[#0A3B66] opacity-40 hover:opacity-100 disabled:opacity-20 p-1 hover:bg-white/10 rounded-lg transition-all flex items-center justify-center"
-              title="רענן ספר הפעלה"
-            >
-              {isGeneratingManual ? (
-                <Loader2 size={18} className="animate-spin" />
-              ) : (
-                <RefreshCw size={18} />
-              )}
-            </button>
-            {operatingManual?.insight && <SpeechButton text={operatingManual.insight} className="text-[#0A3B66] opacity-40 hover:opacity-100" />}
-            {isManualExpanded ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
-          </div>
-        </button>
-
-        {isManualExpanded && (
-          <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2 cursor-default">
-            {isGeneratingManual || !operatingManual?.insight ? (
-              <div className="py-10 flex flex-col items-center text-center space-y-4">
-                <Brain size={40} className="text-[#0A3B66]/20 animate-pulse" strokeWidth={1} />
-                <p className="text-sm text-[#0A3B66]/40 italic">
-                  {isGeneratingManual ? "מעדכן את ספר ההפעלה שלך..." : "הדפוסים שלך מתגבשים ברגעים אלו..."}
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-6">
-                <div className="text-sm text-[#0A3B66] leading-relaxed max-h-[400px] overflow-y-auto pr-2 custom-scrollbar space-y-4 font-medium">
-                  {operatingManual.insight.split('\n').filter(l => l.trim()).map((line, i) => {
-                    const isHeader = /^\d+\./.test(line.trim());
-                    if (isHeader) return <h4 key={i} className="text-md font-bold text-[#0A3B66] mt-4">{line}</h4>;
-                    return (
-                      <p key={i} className={cn(
-                        line.trim().startsWith('*') || line.trim().startsWith('-') ? "pr-4 relative before:content-['•'] before:absolute before:right-0 before:text-[#FFC107]" : ""
-                      )}>
-                        {line.replace(/^(\*|-)\s*/, '')}
-                      </p>
-                    );
-                  })}
-                </div>
-                <div className="pt-4 border-t border-white/20 flex items-center justify-between">
-                  <span className="text-[9px] text-[#0A3B66]/40 uppercase tracking-[0.3em] font-bold">נכתב ע"י בינה מלאכותית</span>
-                  <span className="text-[10px] text-[#0A3B66]/50 font-mono font-bold">
-                    עדכון אחרון: {new Date(operatingManual.lastDate!).toLocaleDateString('he-IL')}
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Execution Gap / Critical Review Section */}
-      <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all relative group mt-4">
-        <button 
-          onClick={() => setIsGapExpanded(!isGapExpanded)}
-          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors relative z-10 text-right"
-        >
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-red-400/20 rounded-2xl flex items-center justify-center text-red-500 shadow-[0_0_20px_rgba(248,113,113,0.3)] group-hover:rotate-12 transition-transform">
-              <Activity size={24} />
-            </div>
-            <div className="text-right">
-              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">קצת ביקורת לא תזיק</span>
-              <span className="block text-xs text-[#0A3B66]/60 uppercase tracking-widest mt-1">משימות מול מציאות</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-3 text-[#0A3B66]/30">
-            {shadowWork?.insight && <SpeechButton text={shadowWork.insight} className="text-[#0A3B66] opacity-40 hover:opacity-100" />}
-            {isGapExpanded ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
-          </div>
-        </button>
-
-        {isGapExpanded && (
-          <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2 cursor-default">
-            {!shadowWork?.insight ? (
-              <div className="py-6 flex flex-col items-center text-center space-y-4">
-                <Activity size={32} className="text-[#0A3B66]/20 animate-pulse" />
-                <p className="text-sm text-[#0A3B66]/40 italic">ה-AI מנתח פערים בין התוכניות שלך לביצוע בפועל...</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="text-sm text-[#0A3B66] leading-relaxed max-h-[300px] overflow-y-auto pr-2 custom-scrollbar space-y-3 font-medium">
-                  {shadowWork.insight.split('\n').filter(l => l.trim()).map((line, i) => (
-                    <p key={i} className={cn(
-                      "pb-2 border-b border-white/20 last:border-0",
-                      line.trim().startsWith('*') || line.trim().startsWith('-') ? "pr-4 relative before:content-['•'] before:absolute before:right-0 before:text-red-400" : ""
-                    )}>
-                      {line.replace(/^(\*|-)\s*/, '')}
-                    </p>
-                  ))}
-                </div>
-                <div className="pt-4 border-t border-white/20 flex items-center justify-between">
-                  <span className="text-[9px] text-[#0A3B66]/40 uppercase tracking-[0.3em] font-bold">ניתוח ביקורתי (Shadow Review)</span>
-                  <span className="text-[10px] text-[#0A3B66]/50 font-mono font-bold">
-                    עדכון אחרון: {new Date(shadowWork.lastDate!).toLocaleDateString('he-IL')}
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
 
       {/* AI Advices Section */}
       <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all relative group mt-4">

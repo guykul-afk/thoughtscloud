@@ -76,21 +76,11 @@ interface AppState {
         lastWeeklyDate?: string;
         lastMonthlyDate?: string;
     } | null;
-    shadowWork: {
-        insight?: string;
-        lastDate?: string;
-    } | null;
     dailyGtd: {
         insight?: string;
         lastDate?: string;
     } | null;
-    operatingManual: {
-        insight?: string;
-        lastDate?: string;
-    } | null;
 
-    globalThreads: { text: string; isResolved: boolean; id: string; createdAt: number }[];
-    lastThreadsScanDate: number;
     majorInsights: string[];
     lastMajorInsightsCount: number;
     knowledgeGraph: KnowledgeGraph;
@@ -104,6 +94,7 @@ interface AppState {
     preferredModel?: string | null;
     preferredApiVersion?: string | null;
     syncStatus: 'synced' | 'saving' | 'error';
+    syncError: string | null;
     
     // Actions
     loadInitialState: () => Promise<void>;
@@ -111,19 +102,13 @@ interface AppState {
     addEntry: (entry: ProcessedSession) => void;
     removeEntry: (id: string) => void;
     updateEntry: (id: string, transcript: string, topics?: string[]) => void;
-    removeThread: (threadId: string) => void;
-    toggleThreadResolution: (threadId: string) => void;
-    setGlobalThreads: (threads: { text: string; isResolved: boolean; id: string; createdAt: number }[]) => void;
-    setLastThreadsScanDate: (date: number) => void;
     setEntries: (entries: DiaryEntry[]) => void;
     addChatMessage: (role: 'user' | 'ai', content: string) => void;
     setChatMessages: (messages: ChatMessage[]) => void;
     setWeeklyInsight: (insight: string) => void;
     setCategoricalInsights: (insights: { work: string; family: string; personal: string }) => void;
     setLifeThemes: (themes: AppState['lifeThemes']) => void;
-    setShadowWork: (shadow: AppState['shadowWork']) => void;
     setDailyGtd: (gtd: AppState['dailyGtd']) => void;
-    setOperatingManual: (manual: AppState['operatingManual']) => void;
     setMajorInsights: (insights: string[]) => void;
     setLastMajorInsightsCount: (count: number) => void;
     addTriples: (triples: Triple[], timestamp: number) => void;
@@ -136,13 +121,13 @@ interface AppState {
 }
 
 async function performFirebaseWrite(set: any, writeFn: () => Promise<any>) {
-    set({ syncStatus: 'saving' });
+    set({ syncStatus: 'saving', syncError: null });
     try {
         await writeFn();
         set({ syncStatus: 'synced' });
-    } catch (e) {
+    } catch (e: any) {
         console.error("Firebase write error:", e);
-        set({ syncStatus: 'error' });
+        set({ syncStatus: 'error', syncError: e.message || String(e) });
     }
 }
 
@@ -156,16 +141,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
         return stored || (import.meta.env.VITE_GEMINI_API_KEY as string) || '';
     })(),
     syncStatus: 'synced',
+    syncError: null,
     entries: [],
     chatMessages: [],
     weeklyInsight: '',
     categoricalInsights: null,
     lifeThemes: null,
-    shadowWork: null,
     dailyGtd: null,
-    operatingManual: null,
-    globalThreads: [],
-    lastThreadsScanDate: 0,
     majorInsights: [],
     lastMajorInsightsCount: 0,
     knowledgeGraph: { nodes: [], edges: [] },
@@ -177,6 +159,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     preferredApiVersion: null,
 
     loadInitialState: async () => {
+        set({ syncStatus: 'saving' });
         try {
             if (!localStorage.getItem('has_migrated_to_firebase')) {
                 await runMigrationToFirebase();
@@ -185,7 +168,35 @@ export const useAppStore = create<AppState>()((set, get) => ({
             }
             let entries = await FirebaseStorageService.loadAllEntries();
             const graph = await FirebaseStorageService.loadKnowledgeGraph();
-            const insights = await FirebaseStorageService.loadInsights();
+            let insights = await FirebaseStorageService.loadInsights();
+
+            // Support pre-generated insights from diary_state.json if server insights are missing
+            let quoteInsights = insights?.quoteInsights || null;
+
+            if (!quoteInsights) {
+                try {
+                    const res = await fetch('/diary_state.json');
+                    if (res.ok) {
+                        const localData = await res.json();
+                        const localState = localData.state || localData;
+                        
+                        let localUpdated = false;
+                        if (!quoteInsights && localState.quoteInsights) {
+                            quoteInsights = localState.quoteInsights;
+                            localUpdated = true;
+                        }
+
+                        if (localUpdated) {
+                            console.log("[FirebaseStorageService] Seeding missing insights from local diary_state.json...");
+                            await FirebaseStorageService.saveInsights({
+                                quoteInsights
+                            });
+                        }
+                    }
+                } catch (err) {
+                    console.warn("Failed to seed initial insights from diary_state.json:", err);
+                }
+            }
 
             // One-time legacy cleanup to delete old threads inside entries
             if (!localStorage.getItem('has_cleared_old_threads_v2')) {
@@ -208,17 +219,15 @@ export const useAppStore = create<AppState>()((set, get) => ({
                 majorInsights: insights?.majorInsights || [],
                 categoricalInsights: insights?.categoricalInsights || null,
                 lifeThemes: insights?.lifeThemes || null,
-                shadowWork: insights?.shadowWork || null,
                 dailyGtd: insights?.dailyGtd || null,
-                operatingManual: insights?.operatingManual || null,
                 advices: insights?.advices || null,
-                quoteInsights: insights?.quoteInsights || null,
+                quoteInsights: quoteInsights,
                 lastMajorInsightsCount: insights?.lastMajorInsightsCount || 0,
-                globalThreads: insights?.globalThreads || [],
-                lastThreadsScanDate: insights?.lastThreadsScanDate || 0
+                syncStatus: 'synced'
             });
         } catch (e) {
             console.error("Failed to load initial state from Firebase", e);
+            set({ syncStatus: 'error' });
         }
     },
 
@@ -388,33 +397,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         }
     },
 
-    removeThread: (threadId) => {
-        set((state) => {
-            const updatedThreads = state.globalThreads.filter(t => t.id !== threadId);
-            performFirebaseWrite(set, () => FirebaseStorageService.saveInsights({ globalThreads: updatedThreads }));
-            return { globalThreads: updatedThreads };
-        });
-    },
 
-    toggleThreadResolution: (threadId) => {
-        set((state) => {
-            const updatedThreads = state.globalThreads.map(t => 
-                t.id === threadId ? { ...t, isResolved: !t.isResolved } : t
-            );
-            performFirebaseWrite(set, () => FirebaseStorageService.saveInsights({ globalThreads: updatedThreads }));
-            return { globalThreads: updatedThreads };
-        });
-    },
-
-    setGlobalThreads: (globalThreads) => {
-        set({ globalThreads });
-        performFirebaseWrite(set, () => FirebaseStorageService.saveInsights({ globalThreads }));
-    },
-
-    setLastThreadsScanDate: (lastThreadsScanDate) => {
-        set({ lastThreadsScanDate });
-        performFirebaseWrite(set, () => FirebaseStorageService.saveInsights({ lastThreadsScanDate }));
-    },
 
     setEntries: (entries) => set({ entries }),
 
@@ -435,19 +418,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
         set({ lifeThemes });
         performFirebaseWrite(set, () => FirebaseStorageService.saveInsights({ lifeThemes }));
     },
-    setShadowWork: (shadowWork) => {
-        set({ shadowWork });
-        performFirebaseWrite(set, () => FirebaseStorageService.saveInsights({ shadowWork }));
-    },
     setDailyGtd: (dailyGtd) => {
         set({ dailyGtd });
         performFirebaseWrite(set, () => FirebaseStorageService.saveInsights({ dailyGtd }));
     },
-    setOperatingManual: (operatingManual) => {
-        set({ operatingManual });
-        performFirebaseWrite(set, () => FirebaseStorageService.saveInsights({ operatingManual }));
-    },
-
     setMajorInsights: (majorInsights) => {
         set({ majorInsights });
         performFirebaseWrite(set, () => FirebaseStorageService.saveInsights({ majorInsights }));

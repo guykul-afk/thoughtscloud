@@ -1,4 +1,4 @@
-import { collection, doc, setDoc, getDoc, getDocs, deleteDoc, query, orderBy } from 'firebase/firestore';
+import { collection, doc, setDoc, getDoc, getDocs, getDocsFromServer, getDocFromServer, deleteDoc, query, orderBy } from 'firebase/firestore';
 import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { db, auth } from './firebase';
 import type { DiaryEntry, KnowledgeGraph } from '../store';
@@ -10,10 +10,18 @@ export class FirebaseStorageService {
 
     static init() {
         if (!this.authPromise) {
+            const localUid = localStorage.getItem('firebase_sync_uid');
+            if (localUid) {
+                this.uid = localUid;
+                this.authPromise = Promise.resolve(localUid);
+                return this.authPromise;
+            }
+
             this.authPromise = new Promise((resolve, reject) => {
                 onAuthStateChanged(auth, (user) => {
                     if (user) {
                         this.uid = user.uid;
+                        localStorage.setItem('firebase_sync_uid', user.uid);
                         triggerOkfFirebaseMigration(user.uid).catch((err) => {
                             console.error("[OKF Auto Migration Error]", err);
                         });
@@ -22,6 +30,7 @@ export class FirebaseStorageService {
                         signInAnonymously(auth)
                             .then((userCredential) => {
                                 this.uid = userCredential.user.uid;
+                                localStorage.setItem('firebase_sync_uid', userCredential.user.uid);
                                 triggerOkfFirebaseMigration(userCredential.user.uid).catch((err) => {
                                     console.error("[OKF Auto Migration Error]", err);
                                 });
@@ -38,7 +47,21 @@ export class FirebaseStorageService {
         return this.authPromise;
     }
 
+    static setCustomUid(customUid: string) {
+        const cleanUid = customUid.trim();
+        if (cleanUid) {
+            this.uid = cleanUid;
+            localStorage.setItem('firebase_sync_uid', cleanUid);
+            this.authPromise = Promise.resolve(cleanUid);
+        }
+    }
+
     private static async getUid(): Promise<string> {
+        const localUid = localStorage.getItem('firebase_sync_uid');
+        if (localUid) {
+            this.uid = localUid;
+            return localUid;
+        }
         if (!this.uid) {
             await this.init();
         }
@@ -137,7 +160,15 @@ export class FirebaseStorageService {
         const uid = await this.getUid();
         const entriesRef = collection(db, `users/${uid}/entries`);
         const q = query(entriesRef, orderBy('timestamp', 'desc'));
-        const querySnapshot = await getDocs(q);
+        
+        let querySnapshot;
+        try {
+            querySnapshot = await getDocsFromServer(q);
+            console.log("[FirebaseStorageService] Loaded entries from server successfully");
+        } catch (err) {
+            console.warn("[FirebaseStorageService] Failed to load entries from server, falling back to cache:", err);
+            querySnapshot = await getDocs(q);
+        }
         
         const entries: DiaryEntry[] = [];
         querySnapshot.forEach((doc) => {
@@ -222,7 +253,15 @@ export class FirebaseStorageService {
     static async loadKnowledgeGraph(): Promise<KnowledgeGraph> {
         const uid = await this.getUid();
         const nodesRef = collection(db, `users/${uid}/knowledge_graph_nodes`);
-        const querySnapshot = await getDocs(nodesRef);
+        
+        let querySnapshot;
+        try {
+            querySnapshot = await getDocsFromServer(nodesRef);
+            console.log("[FirebaseStorageService] Loaded knowledge graph from server successfully");
+        } catch (err) {
+            console.warn("[FirebaseStorageService] Failed to load knowledge graph from server, falling back to cache:", err);
+            querySnapshot = await getDocs(nodesRef);
+        }
         
         const nodes: any[] = [];
         const edges: any[] = [];
@@ -249,7 +288,15 @@ export class FirebaseStorageService {
     static async loadInsights(): Promise<any> {
         const uid = await this.getUid();
         const docRef = doc(db, `users/${uid}/insights`, 'current');
-        const docSnap = await getDoc(docRef);
+        
+        let docSnap;
+        try {
+            docSnap = await getDocFromServer(docRef);
+            console.log("[FirebaseStorageService] Loaded insights from server successfully");
+        } catch (err) {
+            console.warn("[FirebaseStorageService] Failed to load insights from server, falling back to cache:", err);
+            docSnap = await getDoc(docRef);
+        }
         
         if (docSnap.exists()) {
             return docSnap.data();

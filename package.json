@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "generate-insights": "node scripts/generate_initial_insights.js"
   },
   "dependencies": {
     "@google/genai": "^1.46.0",
