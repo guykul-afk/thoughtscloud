@@ -59,13 +59,15 @@ export function cn(...inputs: ClassValue[]) {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'insights' | 'dashboard' | 'history'>('home');
-  const { apiKey, setApiKey, entries, preferredModel, preferredApiVersion, setPreferredModel, loadInitialState, syncStatus, syncError } = useAppStore();
+  const { apiKey, setApiKey, entries, preferredModel, preferredApiVersion, setPreferredModel, loadInitialState, syncStatus, syncError, reprocessAllEntries } = useAppStore();
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [syncUid, setSyncUid] = useState('');
   const [isTestingKey, setIsTestingKey] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [isTestingDb, setIsTestingDb] = useState(false);
   const [dbTestResult, setDbTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [isReprocessing, setIsReprocessing] = useState(false);
+  const [reprocessProgress, setReprocessProgress] = useState<{ current: number; total: number } | null>(null);
 
   useEffect(() => {
     if (showKeyModal) {
@@ -115,6 +117,28 @@ export default function App() {
     }
   }, [apiKey, preferredModel, preferredApiVersion]);
 
+  // Auto-reprocess catalog V2 (behind the scenes)
+  useEffect(() => {
+    const hasRun = localStorage.getItem('hasRunV2Reprocess_v2');
+    if (!hasRun && apiKey && entries.length > 0) {
+      console.log('Running automatic background catalog update...');
+      setIsReprocessing(true);
+      setReprocessProgress({ current: 0, total: entries.length });
+      
+      reprocessAllEntries((current, total) => {
+        setReprocessProgress({ current, total });
+      }).then(() => {
+        setIsReprocessing(false);
+        setReprocessProgress(null);
+        localStorage.setItem('hasRunV2Reprocess_v2', 'true');
+        console.log('Background catalog update completed successfully!');
+      }).catch(err => {
+        console.error('Failed to run background catalog update', err);
+        setIsReprocessing(false);
+        setReprocessProgress(null);
+      });
+    }
+  }, [apiKey, entries.length]);
 
   useEffect(() => {
     const checkStandalone = () => {
@@ -425,6 +449,33 @@ export default function App() {
       });
     } finally {
       setIsTestingDb(false);
+    }
+  };
+
+  const handleReprocessHistory = async () => {
+    if (!apiKey) {
+      alert("אנא הגדר מפתח API תחילה.");
+      return;
+    }
+    if (entries.length === 0) {
+      alert("אין רשומות יומן לעדכון.");
+      return;
+    }
+    const confirmReprocess = window.confirm(`האם אתה בטוח שברצונך לקטלג מחדש ${entries.length} רשומות יומן מהעבר? פעולה זו עשויה לקחת זמן ותפעיל מחדש את ה-AI על כל הרשומות.`);
+    if (!confirmReprocess) return;
+
+    setIsReprocessing(true);
+    setReprocessProgress({ current: 0, total: entries.length });
+    try {
+      await reprocessAllEntries((current, total) => {
+        setReprocessProgress({ current, total });
+      });
+      alert("קיטלוג ההיסטוריה מחדש הושלם בהצלחה!");
+    } catch (err: any) {
+      alert(`שגיאה במהלך קיטלוג מחדש: ${err.message || err}`);
+    } finally {
+      setIsReprocessing(false);
+      setReprocessProgress(null);
     }
   };
 
@@ -908,6 +959,23 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
                 className="flex-1 bg-gray-100 text-[#0A3B66] border border-gray-300 rounded-xl py-2 text-xs font-semibold hover:bg-gray-200 transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
               >
                 {isTestingDb ? <Loader2 size={14} className="animate-spin" /> : "בדיקת מסד נתונים"}
+              </button>
+            </div>
+
+            <div className="mb-4">
+              <button
+                onClick={handleReprocessHistory}
+                disabled={isReprocessing || !apiKey || entries.length === 0}
+                className="w-full bg-amber-50 text-amber-800 border border-amber-200 rounded-xl py-3 text-xs font-semibold hover:bg-amber-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
+              >
+                {isReprocessing ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" />
+                    <span>מקטלג מחדש... ({reprocessProgress?.current}/{reprocessProgress?.total})</span>
+                  </>
+                ) : (
+                  `קיטלוג מחדש של ההיסטוריה (${entries.length} רשומות)`
+                )}
               </button>
             </div>
 

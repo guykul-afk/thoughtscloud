@@ -7,6 +7,8 @@ import { runVectorMigration } from './services/vectorMigration';
 
 // Expose to window for manual execution in browser console
 (window as any).runVectorMigration = runVectorMigration;
+import { useAppStore } from './store';
+(window as any).useAppStore = useAppStore;
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

@@ -133,9 +133,33 @@ For each relationship, you MUST return a structured object instead of a flat arr
   "temporalContext": "חייב להיות אחד מ: 'Past', 'Present', 'Future'",
   "confidence": "חייב להיות אחד מ: 'Fact', 'Inference', 'Opinion'",
   "sentiment": מספר שלם בלבד: -1 (שלילי/תסכול), 0 (ניטרלי), או 1 (חיובי/סיפוק),
-  "subjectType": "חייב להיות אחד מ: 'Person', 'Project', 'Concept', 'Emotion', 'Other'",
-  "objectType": "חייב להיות אחד מ: 'Person', 'Project', 'Concept', 'Emotion', 'Other'"
+  "subjectType": "חייב להיות אחד מ: 'Person', 'Project', 'Concept', 'Emotion', 'Other'. שים לב: עבור שמות של ספרים ספציפיים, פרויקטים, או נכסים, יש לקטלג אותם כ-'Concept' או 'Project' לפי ההקשר.",
+  "objectType": "חייב להיות אחד מ: 'Person', 'Project', 'Concept', 'Emotion', 'Other'."
 }
+
+EXPANDED EXTRACTION RULES (OKF METHODOLOGY):
+1. BOOKS & READING (ספרים וקריאה):
+   - Extract specific books as 'Concept'. Link the user (subject: 'גיא') to the book using precise relations: 'קורא', 'סיים לקרוא', 'נטש', 'רוצה לקרוא'.
+   - Extract authors as 'Person' and link them to the book.
+   - Extract philosophical themes of the book as 'Concept' and link the book to them.
+
+2. RELATIONSHIPS & DYNAMICS (מערכות יחסים):
+   - Avoid generic relations like 'קשור ל'. Use precise emotional and power dynamics: 'מרגיש תסכול מול', 'שואב השראה מ', 'מודאג לגבי', 'מדווח ל'.
+   - Extract shared significant life events as 'Concept' (e.g., 'חופשה במדבר') and link participants to them.
+
+3. WORK, PROJECTS & REAL ESTATE (עבודה, פרויקטים ונדל"ן):
+   - Categorize projects as 'Project'. Track lifecycle states dynamically: 'בוחן רעיון', 'עובד על', 'חסום ב', 'השלים'.
+   - Categorize physical/financial assets (e.g., properties) as 'Concept' and track state: 'משקיע ב', 'מנתח כדאיות של'.
+   - Categorize learned skills as 'Concept': '[גיא] --(משפר מיומנות ב)--> [AI]'.
+
+4. MENTAL WELL-BEING & PSYCHOLOGY (רווחה נפשית ומודעות עצמית):
+   - Detect deep defense mechanisms or cognitive biases (e.g., 'הדחקה', 'הטיה אופטימית') as 'Concept' if observed in the text.
+   - Identify Core Values ('ערכי יסוד') like 'משמעת עצמית', and link them: '[משמעת עצמית] --(מנחה את)--> [גיא]'.
+   - Distinguish between fleeting intentions ('חולם על') and committed actions ('מתמיד ב', 'מבצע').
+
+5. HEALTH & FITNESS (בריאות ותזונה):
+   - Extract milestones or PRs (e.g., 'ריצת 10 ק"מ') as 'Concept' -> '[גיא] --(הגיע להישג)--> [ריצת 10 ק"מ]'.
+   - Extract daily habits (e.g., 'אכילה נקייה') as 'Concept' -> tracked over time.
 `;
 
 // Helper to sanitize and parse JSON from AI response

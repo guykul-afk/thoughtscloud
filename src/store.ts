@@ -118,6 +118,7 @@ interface AppState {
     setQuoteInsights: (advices: QuoteInsightsState) => void;
     setGdriveConnected: (connected: boolean) => void;
     setPreferredModel: (modelName: string, apiVersion: string) => void;
+    reprocessAllEntries: (onProgress?: (current: number, total: number) => void) => Promise<void>;
 }
 
 async function performFirebaseWrite(set: any, writeFn: () => Promise<any>) {
@@ -503,6 +504,124 @@ export const useAppStore = create<AppState>()((set, get) => ({
         if (newGraph) {
             performFirebaseWrite(set, () => FirebaseStorageService.saveKnowledgeGraph(newGraph!));
         }
+    },
+
+    reprocessAllEntries: async (onProgress) => {
+        const { entries, apiKey } = get();
+        if (!apiKey) {
+            throw new Error("מפתח API חסר. אנא הגדר מפתח API בהגדרות.");
+        }
+
+        const { processTextSession } = await import('./services/ai');
+        const updatedEntries: DiaryEntry[] = [];
+        const newNodes: GraphNode[] = [];
+        const newEdges: GraphEdge[] = [];
+
+        console.log(`[Reprocess] Starting reprocessing for ${entries.length} entries...`);
+
+        for (let i = 0; i < entries.length; i++) {
+            const entry = entries[i];
+            if (onProgress) {
+                onProgress(i + 1, entries.length);
+            }
+            try {
+                // Re-analyze the text using processTextSession
+                const processed = await processTextSession(entry.transcript, apiKey);
+                
+                const updatedEntry: DiaryEntry = {
+                    ...entry,
+                    triples: processed.triples || [],
+                    topics: processed.topics || entry.topics,
+                    insights: processed.insights || entry.insights,
+                    mood: processed.mood || entry.mood
+                };
+                updatedEntries.push(updatedEntry);
+
+                // Re-extract nodes and edges
+                if (updatedEntry.triples && updatedEntry.triples.length > 0) {
+                    updatedEntry.triples.forEach((rawT) => {
+                        const t = Array.isArray(rawT) 
+                            ? { subject: rawT[0], relation: rawT[1], object: rawT[2] } as OKFTriple
+                            : rawT as OKFTriple;
+                        
+                        const sLower = (t.subject || '').trim();
+                        const oLower = (t.object || '').trim();
+                        if (!sLower || !oLower) return;
+
+                        if (!newNodes.find(n => n.id === sLower)) {
+                            newNodes.push({ 
+                                id: sLower, 
+                                label: sLower, 
+                                val: 1,
+                                type: t.subjectType || 'Other'
+                            });
+                        } else {
+                            const node = newNodes.find(n => n.id === sLower);
+                            if (node) {
+                                node.val = (node.val || 1) + 0.1;
+                                if (t.subjectType && t.subjectType !== 'Other') {
+                                    node.type = t.subjectType;
+                                }
+                            }
+                        }
+
+                        if (!newNodes.find(n => n.id === oLower)) {
+                            newNodes.push({ 
+                                id: oLower, 
+                                label: oLower, 
+                                val: 1,
+                                type: t.objectType || 'Other'
+                            });
+                        } else {
+                            const node = newNodes.find(n => n.id === oLower);
+                            if (node) {
+                                node.val = (node.val || 1) + 0.1;
+                                if (t.objectType && t.objectType !== 'Other') {
+                                    node.type = t.objectType;
+                                }
+                            }
+                        }
+
+                        const edgeExists = newEdges.find(e => 
+                            e.source === sLower && 
+                            e.target === oLower && 
+                            e.relation === t.relation
+                        );
+                        if (!edgeExists) {
+                            newEdges.push({ 
+                                source: sLower, 
+                                target: oLower, 
+                                relation: t.relation, 
+                                timestamp: entry.timestamp,
+                                domain: t.domain,
+                                temporalContext: t.temporalContext,
+                                confidence: t.confidence,
+                                sentiment: t.sentiment
+                            });
+                        }
+                    });
+                }
+
+                // Save individual entry back to Firebase
+                await FirebaseStorageService.saveEntry(updatedEntry, apiKey);
+            } catch (err) {
+                console.error(`[Reprocess] Failed for entry ${entry.id}:`, err);
+                updatedEntries.push(entry);
+            }
+        }
+
+        const newGraph = { nodes: newNodes, edges: newEdges };
+
+        // Save rebuilt knowledge graph to Firebase
+        await FirebaseStorageService.saveKnowledgeGraph(newGraph);
+
+        // Update Zustand state
+        set({
+            entries: updatedEntries,
+            knowledgeGraph: newGraph
+        });
+
+        console.log(`[Reprocess] Completed reprocessing successfully.`);
     },
     
     setKnowledgeGraph: (knowledgeGraph) => {
