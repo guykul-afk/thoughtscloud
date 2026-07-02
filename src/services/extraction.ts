@@ -193,6 +193,11 @@ export async function processTextSession(textData: string, apiKey: string, curre
   You are an expert personal assistant and psychological profiler assisting "גיא" (Guy).
   Analyze the raw text entry from Guy's diary.
   
+  Raw Text Entry to analyze:
+  """
+  ${textData}
+  """
+  
   Provide exactly the following in clear, valid JSON format:
   {
     "openThreads": ["Array of unresolved thoughts/dilemmas. Phrase as Hebrew questions.", ...],
