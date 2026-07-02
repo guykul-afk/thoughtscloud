@@ -2,7 +2,6 @@ import { collection, doc, setDoc, getDoc, getDocs, getDocsFromServer, getDocFrom
 import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { db, auth } from './firebase';
 import type { DiaryEntry, KnowledgeGraph } from '../store';
-import { triggerOkfFirebaseMigration } from './okfFirebaseMigration';
 
 export class FirebaseStorageService {
     private static uid: string | null = null;
@@ -22,18 +21,12 @@ export class FirebaseStorageService {
                     if (user) {
                         this.uid = user.uid;
                         localStorage.setItem('firebase_sync_uid', user.uid);
-                        triggerOkfFirebaseMigration(user.uid).catch((err) => {
-                            console.error("[OKF Auto Migration Error]", err);
-                        });
                         resolve(user.uid);
                     } else {
                         signInAnonymously(auth)
                             .then((userCredential) => {
                                 this.uid = userCredential.user.uid;
                                 localStorage.setItem('firebase_sync_uid', userCredential.user.uid);
-                                triggerOkfFirebaseMigration(userCredential.user.uid).catch((err) => {
-                                    console.error("[OKF Auto Migration Error]", err);
-                                });
                                 resolve(userCredential.user.uid);
                             })
                             .catch((error) => {
@@ -138,7 +131,7 @@ export class FirebaseStorageService {
         // Save each node as a document
         for (const node of graph.nodes) {
             const safeDocId = node.id.replace(/\//g, '%2F');
-            const docRef = doc(db, `users/${uid}/knowledge_graph_nodes`, safeDocId);
+            const docRef = doc(db, `users/${uid}/entities`, safeDocId);
             // Find edges related to this node
             const relatedEdges = graph.edges.filter(e => e.source === node.id || e.target === node.id);
             
@@ -252,7 +245,7 @@ export class FirebaseStorageService {
 
     static async loadKnowledgeGraph(): Promise<KnowledgeGraph> {
         const uid = await this.getUid();
-        const nodesRef = collection(db, `users/${uid}/knowledge_graph_nodes`);
+        const nodesRef = collection(db, `users/${uid}/entities`);
         
         let querySnapshot;
         try {
@@ -302,5 +295,33 @@ export class FirebaseStorageService {
             return docSnap.data();
         }
         return {};
+    }
+
+    static async saveEpisodicSummary(period: string, summary: any): Promise<void> {
+        const uid = await this.getUid();
+        const docRef = doc(db, `users/${uid}/episodic`, period);
+        await setDoc(docRef, summary);
+    }
+
+    static async loadEpisodicSummary(period: string): Promise<any | null> {
+        const uid = await this.getUid();
+        const docRef = doc(db, `users/${uid}/episodic`, period);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) return docSnap.data();
+        return null;
+    }
+
+    static async saveIdentityPersona(persona: any): Promise<void> {
+        const uid = await this.getUid();
+        const docRef = doc(db, `users/${uid}/identity`, 'persona');
+        await setDoc(docRef, persona);
+    }
+
+    static async loadIdentityPersona(): Promise<any | null> {
+        const uid = await this.getUid();
+        const docRef = doc(db, `users/${uid}/identity`, 'persona');
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) return docSnap.data();
+        return null;
     }
 }

@@ -1,61 +1,41 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import {
-  Mic,
-  Send,
   User,
-  History as HistoryIcon,
-  ChevronDown,
-  ChevronUp,
-  Brain,
-  Notebook,
-  Loader2,
-  Trash2,
-  Square,
   X,
-  Star,
   Cloud,
-  Activity,
-  Lightbulb,
-  Briefcase,
-  Home,
-  Heart,
-  Pencil,
-  Quote
+  Loader2
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { useAppStore, type DiaryEntry } from './store';
+import { useAppStore } from './store';
 import {
   queryInsights,
   generateWeeklyBriefing,
   generateCategoricalInsights,
   generateLifeThemesAnalysis,
   generateEmotionalGTDInsight,
-
   generateMajorInsights,
   generateAdvices,
   generateQuoteInsight,
-  processAudioSession,
   processTextSession,
   SUPPORTED_MODELS,
   setActiveModel,
   autoDiscoverModel
 } from './services/ai';
 import { GeminiLiveService, type LiveChatStatus } from './services/live-ai';
-// Google Drive imports removed
+import DashboardTab from './components/DashboardTab';
+import HomeTab from './components/HomeTab';
+import InsightsTab from './components/InsightsTab';
+import HistoryTab from './components/HistoryTab';
+
 const forceCheckAuth = () => { console.log('forceCheckAuth stubbed'); };
 const dumpStorage = () => { console.log('dumpStorage stubbed'); };
 declare const gapi: any;
-import VoicePulse from './components/VoicePulse';
-import DashboardTab from './components/DashboardTab';
-import SpeechButton from './components/SpeechButton';
 
 // Utility for tailwind classes
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
-
-
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'insights' | 'dashboard' | 'history'>('home');
@@ -74,7 +54,7 @@ export default function App() {
       setSyncUid(localStorage.getItem('firebase_sync_uid') || '');
     }
   }, [showKeyModal]);
-  // Google Drive state variables removed
+
   const [isStandalone, setIsStandalone] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
@@ -166,20 +146,12 @@ export default function App() {
     loadInitialState();
   }, []);
 
-  // handleAuth, handleSignout, syncFromDrive removed
-
-
-
-  // syncToDrive removed
-
   // Generate Weekly Insight when entries change
   useEffect(() => {
     if (!apiKey || entries.length === 0) return;
 
     const timeoutId = setTimeout(async () => {
       const { weeklyInsight, setWeeklyInsight } = useAppStore.getState();
-      // If we already have one and just added one entry, maybe don't re-run every time?
-      // User said "updates based on new entries", so let's run it.
       try {
         const { knowledgeGraph, addTriples } = useAppStore.getState();
         const result = await generateWeeklyBriefing(entries, apiKey, undefined, knowledgeGraph);
@@ -196,7 +168,6 @@ export default function App() {
 
     return () => clearTimeout(timeoutId);
   }, [entries.length, apiKey]);
-
 
   // Generate Categorical Insights when entries change
   const { setCategoricalInsights } = useAppStore();
@@ -259,7 +230,9 @@ export default function App() {
     majorInsights, setMajorInsights,
     lastMajorInsightsCount, setLastMajorInsightsCount,
     advices, setAdvices,
-    quoteInsights, setQuoteInsights
+    quoteInsights, setQuoteInsights,
+    calibratePredictionsAction,
+    updateIdentityPersonaAction
   } = useAppStore();
 
   useEffect(() => {
@@ -272,11 +245,21 @@ export default function App() {
       const dayOfMonth = now.getDate();
 
       // 1. Daily Emotional GTD
-      if (dailyGtd?.lastDate !== todayStr) {
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const entriesToday = entries.filter(e => e.timestamp >= todayStart);
+      const entriesTodayIds = entriesToday.map(e => e.id || '');
+      
+      const dailyGtdOutdated = !dailyGtd || 
+        dailyGtd.lastDate !== todayStr ||
+        !dailyGtd.lastEntryIds ||
+        dailyGtd.lastEntryIds.length !== entriesTodayIds.length ||
+        entriesTodayIds.some(id => !dailyGtd.lastEntryIds!.includes(id));
+
+      if (dailyGtdOutdated && entriesToday.length > 0) {
         try {
           const { knowledgeGraph, addTriples } = useAppStore.getState();
           const { insight, triples } = await generateEmotionalGTDInsight(entries, apiKey, knowledgeGraph);
-          setDailyGtd({ insight, lastDate: todayStr });
+          setDailyGtd({ insight, lastDate: todayStr, lastEntryIds: entriesTodayIds });
           if (triples && triples.length > 0) {
             addTriples(triples, Date.now());
           }
@@ -312,8 +295,6 @@ export default function App() {
           console.error("Monthly analysis error:", e);
         }
       }
-
-
 
       // 5. Major Insights (Triggered if new entries exist since last analysis)
       if (entries.length > 0 && entries.length !== lastMajorInsightsCount) {
@@ -377,13 +358,25 @@ export default function App() {
           console.error("Failed to generate quote insight:", e);
         }
       }
+
+      // 8. Calibrate Predictions
+      try {
+        await calibratePredictionsAction();
+      } catch (e) {
+        console.error("Failed to run prediction calibration:", e);
+      }
+
+      // 9. Update Identity Persona
+      try {
+        await updateIdentityPersonaAction();
+      } catch (e) {
+        console.error("Failed to update identity persona:", e);
+      }
     };
 
     const timeoutId = setTimeout(runAdvancedAnalysis, 10000);
     return () => clearTimeout(timeoutId);
-  }, [entries.length, apiKey, dailyGtd?.lastDate, lifeThemes?.lastWeeklyDate, lifeThemes?.lastMonthlyDate, advices?.lastEntryCount, quoteInsights?.lastUpdateDate, extractedQuotes.length, lastMajorInsightsCount]);
-
-
+  }, [entries.length, apiKey, dailyGtd?.lastDate, dailyGtd?.lastEntryIds?.join(','), lifeThemes?.lastWeeklyDate, lifeThemes?.lastMonthlyDate, advices?.lastEntryCount, quoteInsights?.lastUpdateDate, extractedQuotes.length, lastMajorInsightsCount, calibratePredictionsAction, updateIdentityPersonaAction]);
 
   const handleTestKey = async (keyToTest: string) => {
     if (!keyToTest) return;
@@ -393,7 +386,6 @@ export default function App() {
     let lastError = "";
     let foundWorkableModel = false;
 
-    // Try each model until one works
     for (const model of (SUPPORTED_MODELS as any[])) {
       try {
         setTestResult({ success: false, message: `בודק מודל: ${model.name} (${model.version})...` });
@@ -489,7 +481,15 @@ export default function App() {
       liveServiceRef.current?.stop();
       setIsLiveActive(false);
     } else {
-      const { weeklyInsight, dailyGtd, lifeThemes } = useAppStore.getState();
+      const { weeklyInsight, dailyGtd, lifeThemes, identityPersona } = useAppStore.getState();
+
+      const identityPersonaText = identityPersona ? `
+פרופיל זהות נוכחי:
+- אמונות יסוד: ${identityPersona.coreBeliefs.join(', ')}
+- מטרות פעילות: ${identityPersona.activeGoals.join(', ')}
+- נקודות עיוורון/צל: ${identityPersona.psychologicalProfile.blindSpots.join(', ')}
+- חוזקות: ${identityPersona.psychologicalProfile.strengths.join(', ')}
+` : '';
 
       const socraticInstruction = `
 אתה מאמן סוקרטי מתקדם וחד בשם 'ענן המחשבות'. דבר בעברית בלבד.
@@ -503,6 +503,8 @@ export default function App() {
 - גיל: הבת שלי
 - איתן: הבן שלי
 - נוה: הבן שלי
+
+${identityPersonaText}
 
 הקשר נוכחי:
 ${weeklyInsight ? `- תובנה שבועית (כולל צד הצל): ${weeklyInsight}` : ''}
@@ -534,7 +536,6 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
             
             if (finalTranscript && apiKey) {
               try {
-                // Background process the conversation as a diary entry
                 const currentOpenThreads = useAppStore.getState().entries.flatMap((e: any) => (e.openThreads || []).map((t: any) => typeof t === 'string' ? t : t.text));
                 const result = await processTextSession(finalTranscript, apiKey, currentOpenThreads);
                 useAppStore.getState().addEntry(result);
@@ -551,7 +552,7 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
             liveSessionTranscriptRef.current += `\n${role === 'user' ? 'גיא' : 'ענן המחשבות'}: `;
             liveSessionLastRoleRef.current = role;
           }
-          liveSessionTranscriptRef.current += text + (isUser ? '\n' : ''); // model streams chunks, user streams sentences
+          liveSessionTranscriptRef.current += text + (isUser ? '\n' : '');
         },
         onError: (err) => {
           console.error("Gemini Live Error:", err);
@@ -572,15 +573,16 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
     setIsSending(true);
 
     try {
-      const { entries, weeklyInsight, categoricalInsights, chatMessages, addEntry } = useAppStore.getState();
+      const { entries, weeklyInsight, categoricalInsights, chatMessages, addEntry, knowledgeGraph, identityPersona } = useAppStore.getState();
       const response = await queryInsights(userMsg, entries, apiKey, {
         weeklyInsight: weeklyInsight || undefined,
         categoricalInsights: categoricalInsights || undefined,
-        chatHistory: chatMessages || undefined
+        chatHistory: chatMessages || undefined,
+        knowledgeGraph: knowledgeGraph || undefined,
+        identityPersona: identityPersona || undefined
       });
       addChatMessage('ai', response);
       
-      // Save Q&A as raw material (DiaryEntry)
       addEntry({
         transcript: `שאלה: ${userMsg}\nתשובה: ${response}`,
         openThreads: [],
@@ -603,12 +605,10 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
     const weeklyText = weeklyInsight ? `תובנה שבועית: ${weeklyInsight}` : '';
     const categoricalText = categoricalInsights ? `תובנות לפי קטגוריות: עבודה - ${categoricalInsights.work}, משפחה - ${categoricalInsights.family}, אישי - ${categoricalInsights.personal}` : '';
 
-    // Recent chat history summary
     const chatSummary = chatMessages.slice(-5).map(m =>
       `${m.role === 'user' ? 'גיא' : 'אתה'}: ${m.content}`
     ).join('\n');
 
-    // Recent entries summary - increase to 15 for "full access" feel
     const recentEntries = entries.slice(0, 15).map(e =>
       `[${new Date(e.timestamp).toLocaleDateString('he-IL')}]: ${e.transcript}`
     ).join('\n');
@@ -628,7 +628,6 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
       ${weeklyText}
       ${categoricalText}
 
-
       היסטוריית הצ'אט האחרונה:
       ${chatSummary}
 
@@ -641,366 +640,353 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
     toggleLiveChat(customInstruction);
   };
 
-
-
   return (
     <div className="w-full h-full flex flex-col overflow-hidden bg-transparent">
       <div className="relative w-full h-full flex flex-col text-white overflow-hidden bg-transparent">
-        {/* 3D Background has been removed for mobile stability */}
-
-        {/* Background aesthetic line */}
         <div className="absolute top-[30%] left-[-20%] right-[-20%] h-[60%] bg-[#5EB5D6] opacity-40 blur-[100px] rounded-[50%] pointer-events-none" />
 
-        {/* Top Bar - Responsive to environment */}
         <header className={cn(
           "relative z-20 flex items-center px-6 pb-4 bg-white/5 backdrop-blur-md border-b border-white/10 shrink-0",
           isStandalone ? "pt-[max(env(safe-area-inset-top),20px)]" : "pt-4"
         )}>
-        <img 
-          src="/logo.jpg" 
-          alt="Logo" 
-          className="w-8 h-8 rounded-full border border-white/20 ml-3 object-cover shadow-sm transition-transform active:scale-90"
-        />
-        <h1 
-          onDoubleClick={() => setShowDiagnostics(true)}
-          className="text-xl font-bold text-white tracking-tight cursor-pointer active:scale-95 transition-transform"
-        >
-          ענן המחשבות
-        </h1>
-        <div className="flex-1 overflow-hidden">
-           {/* Debug info if needed, or just space */}
-        </div>
-        <div className="flex items-center gap-2">
-          {syncStatus === 'saving' && (
-            <span className="text-[10px] text-white/40 hidden xs:inline">מסתנכרן עם הענן...</span>
-          )}
-          {syncStatus === 'synced' && (
-            <span className="text-[10px] text-emerald-400/80 hidden xs:inline">הנתונים שמורים בענן</span>
-          )}
-          {syncStatus === 'error' && (
-            <span className="text-[10px] text-red-400 hidden xs:inline">שגיאה בסנכרון לענן</span>
-          )}
-          <button
-            onClick={async () => {
-              try {
-                await loadInitialState();
-              } catch (err) {
-                console.error("Manual sync failed:", err);
+          <img 
+            src="/logo.jpg" 
+            alt="Logo" 
+            className="w-8 h-8 rounded-full border border-white/20 ml-3 object-cover shadow-sm transition-transform active:scale-90"
+          />
+          <h1 
+            onDoubleClick={() => setShowDiagnostics(true)}
+            className="text-xl font-bold text-white tracking-tight cursor-pointer active:scale-95 transition-transform"
+          >
+            ענן המחשבות
+          </h1>
+          <div className="flex-1 overflow-hidden"></div>
+          <div className="flex items-center gap-2">
+            {syncStatus === 'saving' && (
+              <span className="text-[10px] text-white/40 hidden xs:inline">מסתנכרן עם הענן...</span>
+            )}
+            {syncStatus === 'synced' && (
+              <span className="text-[10px] text-emerald-400/80 hidden xs:inline">הנתונים שמורים בענן</span>
+            )}
+            {syncStatus === 'error' && (
+              <span className="text-[10px] text-red-400 hidden xs:inline">שגיאה בסנכרון לענן</span>
+            )}
+            <button
+              onClick={async () => {
+                try {
+                  await loadInitialState();
+                } catch (err) {
+                  console.error("Manual sync failed:", err);
+                }
+              }}
+              disabled={syncStatus === 'saving'}
+              className={cn(
+                "w-10 h-10 rounded-xl flex items-center justify-center transition-all border hover:scale-105 active:scale-95",
+                syncStatus === 'synced' && "bg-[#DCFCE7]/20 text-emerald-400 border-emerald-500/20 hover:bg-[#DCFCE7]/30",
+                syncStatus === 'saving' && "bg-amber-500/10 text-amber-400 border-amber-500/20 cursor-not-allowed",
+                syncStatus === 'error' && "bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/20"
+              )}
+              title={
+                syncStatus === 'synced' ? "הנתונים מסונכרנים ל-Firebase. לחץ לסנכרון ידני." : 
+                syncStatus === 'saving' ? "מסתנכרן מול Firebase..." : 
+                "שגיאה בסנכרון. לחץ לסנכרון מחדש."
               }
-            }}
-            disabled={syncStatus === 'saving'}
-            className={cn(
-              "w-10 h-10 rounded-xl flex items-center justify-center transition-all border hover:scale-105 active:scale-95",
-              syncStatus === 'synced' && "bg-[#DCFCE7]/20 text-emerald-400 border-emerald-500/20 hover:bg-[#DCFCE7]/30",
-              syncStatus === 'saving' && "bg-amber-500/10 text-amber-400 border-amber-500/20 cursor-not-allowed",
-              syncStatus === 'error' && "bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/20"
-            )}
-            title={
-              syncStatus === 'synced' ? "הנתונים מסונכרנים ל-Firebase. לחץ לסנכרון ידני." : 
-              syncStatus === 'saving' ? "מסתנכרן מול Firebase..." : 
-              "שגיאה בסנכרון. לחץ לסנכרון מחדש."
-            }
-          >
-            {syncStatus === 'saving' ? (
-              <Loader2 size={18} className="animate-spin text-amber-400" />
-            ) : (
-              <Cloud 
-                size={20} 
-                className={cn(
-                  syncStatus === 'synced' ? "text-emerald-400" : 
-                  syncStatus === 'error' ? "text-red-400" : 
-                  "text-white/40"
-                )} 
-              />
-            )}
-          </button>
-          <button
-            onClick={() => setShowKeyModal(true)}
-            className="w-10 h-10 bg-white rounded-xl flex items-center justify-center text-[#0D3B66] shadow-md border border-gray-100 hover:bg-gray-50 transition-all"
-          >
-            <User size={20} />
-          </button>
-        </div>
-      </header>
+            >
+              {syncStatus === 'saving' ? (
+                <Loader2 size={18} className="animate-spin text-amber-400" />
+              ) : (
+                <Cloud 
+                  size={20} 
+                  className={cn(
+                    syncStatus === 'synced' ? "text-emerald-400" : 
+                    syncStatus === 'error' ? "text-red-400" : 
+                    "text-white/40"
+                  )} 
+                />
+              )}
+            </button>
+            <button
+              onClick={() => setShowKeyModal(true)}
+              className="w-10 h-10 bg-white rounded-xl flex items-center justify-center text-[#0D3B66] shadow-md border border-gray-100 hover:bg-gray-50 transition-all"
+            >
+              <User size={20} />
+            </button>
+          </div>
+        </header>
 
-      {/* Diagnostics Panel - Nuclear Rebuild Mode */}
-      {showDiagnostics && (
-        <div className="fixed inset-0 z-[100] bg-[#0A192F] text-xs font-mono p-4 flex flex-col overflow-hidden">
-           <div className="flex justify-between items-center mb-4 pb-2 border-b border-white/20">
-              <h2 className="text-emerald-400 font-bold flex items-center gap-2">
-                 לוח בקרה דיאגנוסטי
-              </h2>
-              <button 
-                onClick={() => setShowDiagnostics(false)}
-                className="px-3 py-1 bg-red-900/50 text-white rounded-lg border border-red-500/30"
-              >סגור</button>
-           </div>
-           
-           <div className="grid grid-cols-2 gap-2 mb-4">
-              <div className="p-2 bg-white/5 rounded border border-white/10 uppercase">
-                <div className="text-[10px] text-white/40">GAPI</div>
-                <div className={cn("font-bold", typeof (window as any).gapi !== 'undefined' ? "text-emerald-400" : "text-red-400")}>
-                  {typeof (window as any).gapi !== 'undefined' ? "LOADED" : "MISSING"}
+        {showDiagnostics && (
+          <div className="fixed inset-0 z-[100] bg-[#0A192F] text-xs font-mono p-4 flex flex-col overflow-hidden">
+             <div className="flex justify-between items-center mb-4 pb-2 border-b border-white/20">
+                <h2 className="text-emerald-400 font-bold flex items-center gap-2">
+                   לוח בקרה דיאגנוסטי
+                </h2>
+                <button 
+                  onClick={() => setShowDiagnostics(false)}
+                  className="px-3 py-1 bg-red-900/50 text-white rounded-lg border border-red-500/30"
+                >סגור</button>
+             </div>
+             
+             <div className="grid grid-cols-2 gap-2 mb-4">
+                <div className="p-2 bg-white/5 rounded border border-white/10 uppercase">
+                  <div className="text-[10px] text-white/40">GAPI</div>
+                  <div className={cn("font-bold", typeof (window as any).gapi !== 'undefined' ? "text-emerald-400" : "text-red-400")}>
+                    {typeof (window as any).gapi !== 'undefined' ? "LOADED" : "MISSING"}
+                  </div>
                 </div>
-              </div>
-              <div className="p-2 bg-white/5 rounded border border-white/10 uppercase">
-                <div className="text-[10px] text-white/40">GIS</div>
-                <div className={cn("font-bold", typeof (window as any).google !== 'undefined' ? "text-emerald-400" : "text-red-400")}>
-                  {typeof (window as any).google !== 'undefined' ? "LOADED" : "MISSING"}
+                <div className="p-2 bg-white/5 rounded border border-white/10 uppercase">
+                  <div className="text-[10px] text-white/40">GIS</div>
+                  <div className={cn("font-bold", typeof (window as any).google !== 'undefined' ? "text-emerald-400" : "text-red-400")}>
+                    {typeof (window as any).google !== 'undefined' ? "LOADED" : "MISSING"}
+                  </div>
                 </div>
-              </div>
-              <div className="p-2 bg-white/5 rounded border border-white/10 uppercase">
-                <div className="text-[10px] text-white/40">Standalone</div>
-                <div className="text-white">{isStandalone ? "YES" : "NO"}</div>
-              </div>
-              <div className="p-2 bg-white/5 rounded border border-white/10 uppercase">
-                <div className="text-[10px] text-white/40">Firebase Sync</div>
-                <div className={cn("font-bold", syncStatus === 'synced' ? "text-emerald-400" : syncStatus === 'saving' ? "text-amber-400" : "text-red-400")}>
-                  {syncStatus.toUpperCase()}
+                <div className="p-2 bg-white/5 rounded border border-white/10 uppercase">
+                  <div className="text-[10px] text-white/40">Standalone</div>
+                  <div className="text-white">{isStandalone ? "YES" : "NO"}</div>
                 </div>
-              </div>
-           </div>
+                <div className="p-2 bg-white/5 rounded border border-white/10 uppercase">
+                  <div className="text-[10px] text-white/40">Firebase Sync</div>
+                  <div className={cn("font-bold", syncStatus === 'synced' ? "text-emerald-400" : syncStatus === 'saving' ? "text-amber-400" : "text-red-400")}>
+                    {syncStatus.toUpperCase()}
+                  </div>
+                </div>
+             </div>
 
-           <div className="flex-1 bg-black/50 rounded-lg p-3 border border-white/10 overflow-auto whitespace-pre-wrap break-all leading-tight">
-              {logs.length === 0 ? <div className="text-white/20 italic">No logs captured yet...</div> : logs.map((log, i) => (
-                <div key={i} className={cn("mb-1 pb-1 border-b border-white/5", log.includes('[ERR]') ? "text-red-400" : log.includes('[WRN]') ? "text-amber-300" : "text-white/80")}>
-                  {log}
-                </div>
-              ))}
-           </div>
+             <div className="flex-1 bg-black/50 rounded-lg p-3 border border-white/10 overflow-auto whitespace-pre-wrap break-all leading-tight">
+                {logs.length === 0 ? <div className="text-white/20 italic">No logs captured yet...</div> : logs.map((log, i) => (
+                  <div key={i} className={cn("mb-1 pb-1 border-b border-white/5", log.includes('[ERR]') ? "text-red-400" : log.includes('[WRN]') ? "text-amber-300" : "text-white/80")}>
+                    {log}
+                  </div>
+                ))}
+             </div>
 
-           <div className="grid grid-cols-2 gap-3 mt-4 pb-[180px]">
-              <button 
-                onClick={() => {
-                  console.log("Nuclear Reset (Clear Cache) Triggered...");
-                  localStorage.clear();
-                  window.location.reload();
-                }}
-                className="w-full bg-red-600/20 py-3 rounded-xl border border-red-500/30 text-red-100 font-bold"
-              >איפוס מטמון</button>
-              <button 
-                onClick={() => {
-                  console.log("Manual Sync (Force Scan) Triggered...");
-                  forceCheckAuth();
-                  dumpStorage();
-                }}
-                className="w-full bg-blue-600/20 py-3 rounded-xl border border-blue-500/30 text-blue-400 font-bold"
-              >סנכרון ידני</button>
-              <button 
-                onClick={() => {
-                  console.log("Fix Device (Reload) Triggered...");
-                  window.location.reload();
-                }}
-                className="w-full bg-amber-600/20 py-3 rounded-xl border border-amber-500/30 text-amber-400 font-bold"
-              >תיקון חומרה (Reload)</button>
-              <button 
-                onClick={async () => {
-                  console.log("MIC DOCTOR: Starting hardware check...");
-                  try {
-                    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-                    await ctx.resume();
-                    console.log("MIC DOCTOR: AudioContext Status ->", ctx.state);
-                    
-                    const timeout = setTimeout(() => {
-                      console.error("MIC DOCTOR: getUserMedia HANG/TIMEOUT (5s)");
-                      ctx.close();
-                    }, 5000);
-
-                    navigator.mediaDevices.getUserMedia({ audio: true })
-                      .then((s) => {
-                        clearTimeout(timeout);
-                        console.log("MIC DOCTOR: getUserMedia SUCCESS. Tracks:", s.getTracks().length);
-                        console.log("MIC DOCTOR: Sample Rate ->", ctx.sampleRate);
-                        s.getTracks().forEach(t => t.stop());
+             <div className="grid grid-cols-2 gap-3 mt-4 pb-[180px]">
+                <button 
+                  onClick={() => {
+                    console.log("Nuclear Reset (Clear Cache) Triggered...");
+                    localStorage.clear();
+                    window.location.reload();
+                  }}
+                  className="w-full bg-red-600/20 py-3 rounded-xl border border-red-500/30 text-red-100 font-bold"
+                >איפוס מטמון</button>
+                <button 
+                  onClick={() => {
+                    console.log("Manual Sync (Force Scan) Triggered...");
+                    forceCheckAuth();
+                    dumpStorage();
+                  }}
+                  className="w-full bg-blue-600/20 py-3 rounded-xl border border-blue-500/30 text-blue-400 font-bold"
+                >סנכרון ידני</button>
+                <button 
+                  onClick={() => {
+                    console.log("Fix Device (Reload) Triggered...");
+                    window.location.reload();
+                  }}
+                  className="w-full bg-amber-600/20 py-3 rounded-xl border border-amber-500/30 text-amber-400 font-bold"
+                >תיקון חומרה (Reload)</button>
+                <button 
+                  onClick={async () => {
+                    console.log("MIC DOCTOR: Starting hardware check...");
+                    try {
+                      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+                      await ctx.resume();
+                      console.log("MIC DOCTOR: AudioContext Status ->", ctx.state);
+                      
+                      const timeout = setTimeout(() => {
+                        console.error("MIC DOCTOR: getUserMedia HANG/TIMEOUT (5s)");
                         ctx.close();
-                      })
-                      .catch(err => {
-                        clearTimeout(timeout);
-                        console.error("MIC DOCTOR: getUserMedia FAIL ->", err.name, err.message);
-                        ctx.close();
-                      });
-                  } catch (e) { 
-                    console.error("MIC DOCTOR: Exception ->", e); 
-                  }
-                }}
-                className="w-full bg-emerald-600/20 py-3 rounded-xl border border-emerald-500/30 text-emerald-400 font-bold"
-              >בדיקת מיקרופון (Doctor)</button>
-           </div>
+                      }, 5000);
+
+                      navigator.mediaDevices.getUserMedia({ audio: true })
+                        .then((s) => {
+                          clearTimeout(timeout);
+                          console.log("MIC DOCTOR: getUserMedia SUCCESS. Tracks:", s.getTracks().length);
+                          console.log("MIC DOCTOR: Sample Rate ->", ctx.sampleRate);
+                          s.getTracks().forEach(t => t.stop());
+                          ctx.close();
+                        })
+                        .catch(err => {
+                          clearTimeout(timeout);
+                          console.error("MIC DOCTOR: getUserMedia FAIL ->", err.name, err.message);
+                          ctx.close();
+                        });
+                    } catch (e) { 
+                      console.error("MIC DOCTOR: Exception ->", e); 
+                    }
+                  }}
+                  className="w-full bg-emerald-600/20 py-3 rounded-xl border border-emerald-500/30 text-emerald-400 font-bold"
+                >בדיקת מיקרופון (Doctor)</button>
+             </div>
+          </div>
+        )}
+
+        <main className="relative z-10 w-full flex-1 flex flex-col px-6 overflow-y-auto pb-[180px] pt-4 custom-scrollbar">
+          {activeTab === 'home' && (
+            <HomeTab 
+              isLiveActive={isLiveActive} 
+              liveStatus={liveStatus} 
+              liveTranscript={liveTranscript}
+              isRecording={isRecording}
+              setIsRecording={setIsRecording}
+              handleToggleVoice={handleToggleVoice}
+            />
+          )}
+          {activeTab === 'insights' && (
+            <InsightsTab 
+              isLiveActive={isLiveActive} 
+              input={input}
+              setInput={setInput}
+              handleSend={handleSend}
+              isSending={isSending}
+              handleToggleVoice={handleToggleVoice}
+              extractedQuotes={extractedQuotes}
+            />
+          )}
+          {activeTab === 'dashboard' && <DashboardTab />}
+          {activeTab === 'history' && <HistoryTab />}
+        </main>
+
+        <div className="fixed bottom-0 left-0 right-0 z-[100] flex justify-center px-6 pb-[env(safe-area-inset-bottom,24px)] pointer-events-none">
+          <nav className="w-full h-20 bg-[#0D3B66]/80 backdrop-blur-3xl rounded-[2.5rem] flex justify-around items-center px-4 shadow-2xl border border-white/10 pointer-events-auto" dir="rtl">
+            <NavItem id="home" label="בית" isActive={activeTab === 'home'} onClick={() => setActiveTab('home')} />
+            <NavItem id="insights" label="תובנות" isActive={activeTab === 'insights'} onClick={() => setActiveTab('insights')} />
+            <NavItem id="dashboard" label="מבט על" isActive={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
+            <NavItem id="history" label="יומן" isActive={activeTab === 'history'} onClick={() => setActiveTab('history')} />
+          </nav>
         </div>
-      )}
-
-      {/* Main Content Area */}
-      <main className="relative z-10 w-full flex-1 flex flex-col px-6 overflow-y-auto pb-[180px] pt-4 custom-scrollbar">
-        {activeTab === 'home' && (
-          <HomeTab 
-            isLiveActive={isLiveActive} 
-            liveStatus={liveStatus} 
-            liveTranscript={liveTranscript}
-            isRecording={isRecording}
-            setIsRecording={setIsRecording}
-            handleToggleVoice={handleToggleVoice}
-          />
-        )}
-        {activeTab === 'insights' && (
-          <InsightsTab 
-            isLiveActive={isLiveActive} 
-            input={input}
-            setInput={setInput}
-            handleSend={handleSend}
-            isSending={isSending}
-            handleToggleVoice={handleToggleVoice}
-            extractedQuotes={extractedQuotes}
-          />
-        )}
-        {activeTab === 'dashboard' && <DashboardTab />}
-        {activeTab === 'history' && <HistoryTab />}
-      </main>
-
-
-
-      {/* Bottom Navigation */}
-      <div className="fixed bottom-0 left-0 right-0 z-[100] flex justify-center px-6 pb-[env(safe-area-inset-bottom,24px)] pointer-events-none">
-        <nav className="w-full h-20 bg-[#0D3B66]/80 backdrop-blur-3xl rounded-[2.5rem] flex justify-around items-center px-4 shadow-2xl border border-white/10 pointer-events-auto" dir="rtl">
-          <NavItem id="home" label="בית" isActive={activeTab === 'home'} onClick={() => setActiveTab('home')} />
-          <NavItem id="insights" label="תובנות" isActive={activeTab === 'insights'} onClick={() => setActiveTab('insights')} />
-          <NavItem id="dashboard" label="מבט על" isActive={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
-          <NavItem id="history" label="יומן" isActive={activeTab === 'history'} onClick={() => setActiveTab('history')} />
-        </nav>
-      </div>
-      {showKeyModal && (
-        <div className="absolute inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-6">
-          <div className="bg-white rounded-3xl p-6 text-[#0A3B66] w-full max-w-sm shadow-2xl">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-xl font-bold">הגדרות בינה מלאכותית</h2>
-              <button
-                onClick={() => setShowKeyModal(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X size={20} />
-              </button>
-            </div>
-            <p className="text-sm text-gray-500 mb-4">
-              כדי להשתמש בבינה מלאכותית, אנא הכנס מפתח API של <span className="font-bold text-[#0A3B66]">Gemini 2.0 Flash</span>.
-            </p>
-
-            <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 mb-4">
-              <p className="text-xs text-blue-800 leading-relaxed">
-                💡 <strong>אין לך מפתח?</strong> צור אחד בחינם ב-<a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="underline font-bold">Google AI Studio</a>.
-                <br />
-                וודא שה-Generative Language API <strong>מופעל</strong> בפרויקט שלך.
-              </p>
-            </div>
-
-             <div className="mb-4">
-              <label className="block text-xs font-bold mb-1 text-gray-500">מפתח Gemini API</label>
-              <input
-                type="text"
-                placeholder="Gemini API Key..."
-                defaultValue={apiKey}
-                onChange={(e) => {
-                  setApiKey(e.target.value);
-                  setTestResult(null);
-                }}
-                className="w-full bg-white border border-gray-300 rounded-xl py-3 px-4 text-left font-mono text-xs focus:ring-2 focus:ring-[#0A3B66] outline-none shadow-sm"
-                dir="ltr"
-              />
-            </div>
-
-            <div className="mb-4">
-              <label className="block text-xs font-bold mb-1 text-gray-500">מזהה סנכרון (Sync User ID)</label>
-              <input
-                type="text"
-                placeholder="מזהה סנכרון ייחודי..."
-                value={syncUid}
-                onChange={(e) => setSyncUid(e.target.value)}
-                className="w-full bg-white border border-gray-300 rounded-xl py-3 px-4 text-left font-mono text-xs focus:ring-2 focus:ring-[#0A3B66] outline-none shadow-sm"
-                dir="ltr"
-              />
-              <p className="text-[10px] text-gray-400 mt-1">
-                תוכל להעתיק מזהה זה למכשירים אחרים כדי לשתף ולסנכרן את רשומות היומן שלך בענן.
-              </p>
-            </div>
-
-            {syncError && (
-              <div className="bg-red-50 border border-red-100 rounded-xl p-3 mb-4 text-xs text-red-800 text-right leading-relaxed">
-                ⚠️ <strong>שגיאת סנכרון אחרונה:</strong> {syncError}
+        {showKeyModal && (
+          <div className="absolute inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-6">
+            <div className="bg-white rounded-3xl p-6 text-[#0A3B66] w-full max-w-sm shadow-2xl">
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-xl font-bold">הגדרות בינה מלאכותית</h2>
+                <button
+                  onClick={() => setShowKeyModal(false)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X size={20} />
+                </button>
               </div>
-            )}
-
-            {testResult && (
-              <p className={cn(
-                "text-xs mb-4 font-bold text-center animate-in fade-in slide-in-from-top-1",
-                testResult.success ? "text-emerald-600" : "text-red-600"
-              )}>
-                {testResult.message}
+              <p className="text-sm text-gray-500 mb-4">
+                כדי להשתמש בבינה מלאכותית, אנא הכנס מפתח API של <span className="font-bold text-[#0A3B66]">Gemini 2.0 Flash</span>.
               </p>
-            )}
 
-            {dbTestResult && (
-              <p className={cn(
-                "text-xs mb-4 font-bold text-center animate-in fade-in slide-in-from-top-1",
-                dbTestResult.success ? "text-emerald-600" : "text-red-600"
-              )}>
-                {dbTestResult.message}
-              </p>
-            )}
+              <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 mb-4">
+                <p className="text-xs text-blue-800 leading-relaxed">
+                  💡 <strong>אין לך מפתח?</strong> צור אחד בחינם ב-<a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="underline font-bold">Google AI Studio</a>.
+                  <br />
+                  וודא שה-Generative Language API <strong>מופעל</strong> בפרויקט שלך.
+                </p>
+              </div>
 
-            <div className="flex gap-2 mb-4">
-              <button
-                onClick={() => handleTestKey(apiKey)}
-                disabled={isTestingKey || !apiKey}
-                className="flex-1 bg-gray-100 text-[#0A3B66] border border-gray-300 rounded-xl py-2 text-xs font-semibold hover:bg-gray-200 transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
-              >
-                {isTestingKey ? <Loader2 size={14} className="animate-spin" /> : "בדיקת API Key"}
-              </button>
-              <button
-                onClick={handleTestDatabase}
-                disabled={isTestingDb}
-                className="flex-1 bg-gray-100 text-[#0A3B66] border border-gray-300 rounded-xl py-2 text-xs font-semibold hover:bg-gray-200 transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
-              >
-                {isTestingDb ? <Loader2 size={14} className="animate-spin" /> : "בדיקת מסד נתונים"}
-              </button>
-            </div>
+               <div className="mb-4">
+                <label className="block text-xs font-bold mb-1 text-gray-500">מפתח Gemini API</label>
+                <input
+                  type="text"
+                  placeholder="Gemini API Key..."
+                  defaultValue={apiKey}
+                  onChange={(e) => {
+                    setApiKey(e.target.value);
+                    setTestResult(null);
+                  }}
+                  className="w-full bg-white border border-gray-300 rounded-xl py-3 px-4 text-left font-mono text-xs focus:ring-2 focus:ring-[#0A3B66] outline-none shadow-sm"
+                  dir="ltr"
+                />
+              </div>
 
-            <div className="mb-4">
-              <button
-                onClick={handleReprocessHistory}
-                disabled={isReprocessing || !apiKey || entries.length === 0}
-                className="w-full bg-amber-50 text-amber-800 border border-amber-200 rounded-xl py-3 text-xs font-semibold hover:bg-amber-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
-              >
-                {isReprocessing ? (
-                  <>
-                    <Loader2 size={14} className="animate-spin" />
-                    <span>מקטלג מחדש... ({reprocessProgress?.current}/{reprocessProgress?.total})</span>
-                  </>
-                ) : (
-                  `קיטלוג מחדש של ההיסטוריה (${entries.length} רשומות)`
-                )}
-              </button>
-            </div>
+              <div className="mb-4">
+                <label className="block text-xs font-bold mb-1 text-gray-500">מזהה סנכרון (Sync User ID)</label>
+                <input
+                  type="text"
+                  placeholder="מזהה סנכרון ייחודי..."
+                  value={syncUid}
+                  onChange={(e) => setSyncUid(e.target.value)}
+                  className="w-full bg-white border border-gray-300 rounded-xl py-3 px-4 text-left font-mono text-xs focus:ring-2 focus:ring-[#0A3B66] outline-none shadow-sm"
+                  dir="ltr"
+                />
+                <p className="text-[10px] text-gray-400 mt-1">
+                  תוכל להעתיק מזהה זה למכשירים אחרים כדי לשתף ולסנכרן את רשומות היומן שלך בענן.
+                </p>
+              </div>
 
-            <div className="flex gap-3">
-              <button
-                onClick={async () => {
-                  const currentUid = localStorage.getItem('firebase_sync_uid') || '';
-                  const targetUid = syncUid.trim();
-                  if (targetUid && targetUid !== currentUid) {
-                    const { FirebaseStorageService } = await import('./services/FirebaseStorageService');
-                    FirebaseStorageService.setCustomUid(targetUid);
-                    await loadInitialState();
-                  }
-                  setShowKeyModal(false);
-                }}
-                className="w-full bg-[#0A3B66] text-white rounded-xl py-3 font-semibold hover:bg-[#082b4a] transition-colors shadow-md"
-              >
-                שמור וסגור
-              </button>
+              {syncError && (
+                <div className="bg-red-50 border border-red-100 rounded-xl p-3 mb-4 text-xs text-red-800 text-right leading-relaxed">
+                  ⚠️ <strong>שגיאת סנכרון אחרונה:</strong> {syncError}
+                </div>
+              )}
+
+              {testResult && (
+                <p className={cn(
+                  "text-xs mb-4 font-bold text-center animate-in fade-in slide-in-from-top-1",
+                  testResult.success ? "text-emerald-600" : "text-red-600"
+                )}>
+                  {testResult.message}
+                </p>
+              )}
+
+              {dbTestResult && (
+                <p className={cn(
+                  "text-xs mb-4 font-bold text-center animate-in fade-in slide-in-from-top-1",
+                  dbTestResult.success ? "text-emerald-600" : "text-red-600"
+                )}>
+                  {dbTestResult.message}
+                </p>
+              )}
+
+              <div className="flex gap-2 mb-4">
+                <button
+                  onClick={() => handleTestKey(apiKey)}
+                  disabled={isTestingKey || !apiKey}
+                  className="flex-1 bg-gray-100 text-[#0A3B66] border border-gray-300 rounded-xl py-2 text-xs font-semibold hover:bg-gray-200 transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
+                >
+                  {isTestingKey ? <Loader2 size={14} className="animate-spin" /> : "בדיקת API Key"}
+                </button>
+                <button
+                  onClick={handleTestDatabase}
+                  disabled={isTestingDb}
+                  className="flex-1 bg-gray-100 text-[#0A3B66] border border-gray-300 rounded-xl py-2 text-xs font-semibold hover:bg-gray-200 transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
+                >
+                  {isTestingDb ? <Loader2 size={14} className="animate-spin" /> : "בדיקת מסד נתונים"}
+                </button>
+              </div>
+
+              <div className="mb-4">
+                <button
+                  onClick={handleReprocessHistory}
+                  disabled={isReprocessing || !apiKey || entries.length === 0}
+                  className="w-full bg-amber-50 text-amber-800 border border-amber-200 rounded-xl py-3 text-xs font-semibold hover:bg-amber-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
+                >
+                  {isReprocessing ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin" />
+                      <span>מקטלג מחדש... ({reprocessProgress?.current}/{reprocessProgress?.total})</span>
+                    </>
+                  ) : (
+                    `קיטלוג מחדש של ההיסטוריה (${entries.length} רשומות)`
+                  )}
+                </button>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={async () => {
+                    const currentUid = localStorage.getItem('firebase_sync_uid') || '';
+                    const targetUid = syncUid.trim();
+                    if (targetUid && targetUid !== currentUid) {
+                      const { FirebaseStorageService } = await import('./services/FirebaseStorageService');
+                      FirebaseStorageService.setCustomUid(targetUid);
+                      await loadInitialState();
+                    }
+                    setShowKeyModal(false);
+                  }}
+                  className="w-full bg-[#0A3B66] text-white rounded-xl py-3 font-semibold hover:bg-[#082b4a] transition-colors shadow-md"
+                >
+                  שמור וסגור
+                </button>
+              </div>
             </div>
           </div>
+          )}
         </div>
-        )}
       </div>
-    </div>
   );
 }
 
@@ -1022,1013 +1008,5 @@ function NavItem({ label, isActive, onClick }: { id: string; label: string; isAc
         {label}
       </span>
     </button>
-  );
-}
-
-function HomeTab({ 
-  isLiveActive, liveStatus, liveTranscript, isRecording, setIsRecording, handleToggleVoice
-}: { 
-  isLiveActive: boolean; 
-  liveStatus: LiveChatStatus; 
-  liveTranscript: string;
-  isRecording: boolean;
-  setIsRecording: (val: boolean) => void;
-  handleToggleVoice: (instruction?: string) => void;
-}) {
-  const [showTextInput, setShowTextInput] = useState(false);
-  const [textInput, setTextInput] = useState('');
-  const [isProcessingText, setIsProcessingText] = useState(false);
-  const [isProcessingAudio, setIsProcessingAudio] = useState(false);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const { apiKey, addEntry, entries } = useAppStore();
-  const [recordingTime, setRecordingTime] = useState(0);
-  const timerIntervalRef = useRef<number | null>(null);
-
-  const startRecording = async () => {
-    console.log("TRACE: startRecording (STAGE 1: Intent Received)");
-    try {
-      if (isRecording) {
-        console.warn("TRACE: startRecording aborted - already recording.");
-        return;
-      }
-      setIsRecording(true); // Set UI state first for responsiveness
-      console.log("TRACE: startRecording (STAGE 2: UI State Set)");
-      const getUserMediaWithTimeout = (constraints: MediaStreamConstraints, timeoutMs = 4000): Promise<MediaStream> => {
-        return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error("Timeout: Mic request hanging")), timeoutMs);
-          navigator.mediaDevices.getUserMedia(constraints)
-            .then(stream => { clearTimeout(timer); resolve(stream); })
-            .catch(err => { clearTimeout(timer); reject(err); });
-        });
-      };
-
-      console.log("TRACE: startRecording -> requesting getUserMedia...");
-      const stream = await getUserMediaWithTimeout({ audio: true });
-      console.log("TRACE: startRecording -> getUserMedia OK (Stream Active)");
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm') 
-        ? 'audio/webm' 
-        : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
-      
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      mediaRecorderRef.current = recorder;
-      audioChunksRef.current = [];
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunksRef.current.push(e.data);
-      };
-
-      recorder.onstop = async () => {
-        const actualMimeType = mediaRecorderRef.current?.mimeType || 'audio/webm';
-        const audioBlob = new Blob(audioChunksRef.current, { type: actualMimeType });
-        
-        console.log("Recording stopped. Blob size:", audioBlob.size, "Type:", actualMimeType);
-
-        // ALWAYS release the hardware tracks to prevent OS lockups
-        if (mediaRecorderRef.current?.stream) {
-          mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-        }
-
-        if (!apiKey) {
-          alert("שגיאה במפתח ה-API: המפתח חסר (אנא ודא שהגדרת מפתח Gemini).");
-          return;
-        }
-
-        if (audioChunksRef.current.length === 0 || audioBlob.size < 100) {
-          alert("שגיאה: כמות המידע שהוקלטה קטנה מדי. ייתכן והמיקרופון נחסם.");
-          return;
-        }
-
-        setIsProcessingAudio(true);
-        try {
-          const currentOpenThreads = entries.flatMap((e: any) => (e.openThreads || []).map((t: any) => typeof t === 'string' ? t : t.text));
-          const result = await processAudioSession(audioBlob, apiKey, currentOpenThreads);
-          if (result.transcript === 'NO_SPEECH_DETECTED') {
-            alert("לא זוהה דיבור ברור בהקלטה, הרשומה בוטלה ולא נשמרה ביומן.");
-          } else {
-            addEntry(result);
-          }
-        } catch (e: any) {
-          console.error("Recording process error:", e);
-          alert("שגיאה בתמלול וניתוח ההקלטה (" + e.name + "): " + (e.message || JSON.stringify(e)));
-        } finally {
-          setIsProcessingAudio(false);
-        }
-      };
-
-      recorder.onerror = (e) => {
-        console.error("Recorder fired onerror:", e);
-        setIsRecording(false);
-        if (mediaRecorderRef.current?.stream) {
-          mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-        }
-      };
-
-      // Set state and start timer BEFORE start() to ensure UI reflects intent immediately
-      // But wrap start() in a try-catch to rollback if hardware fails
-      setRecordingTime(0);
-      setIsRecording(true);
-      
-      try {
-        console.log("TRACE: startRecording (STAGE 4: Hardware Start Request)");
-        recorder.start(1000); // Using 1000ms timeslice as it's often more stable on Safari
-        console.log("TRACE: startRecording (STAGE 5: Hardware OK - Timer Starting)");
-        if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-        timerIntervalRef.current = window.setInterval(() => {
-          setRecordingTime(prev => prev + 1);
-        }, 1000);
-      } catch (startErr: any) {
-        setIsRecording(false);
-        console.error("Hardware start failed:", startErr);
-        throw startErr;
-      }
-    } catch (e: any) {
-      console.error("Start recording error:", e);
-      if (e.message?.includes("Timeout")) {
-         alert("המיקרופון לא מגיב. תופעה זו מוכרת לאחר מעבר חלונות בטלפונים מסוימים. אנא סגור לחלוטין את האפליקציה (החלק אותה למעלה) ופתח מחדש.");
-      } else {
-         alert("שגיאה בגישה למיקרופון (" + e.name + "): " + (e.message || "יש לאפשר הרשאות מיקרופון בהגדרות המכשיר."));
-      }
-    }
-  };
-
-  const stopRecording = () => {
-    if (timerIntervalRef.current) {
-      clearInterval(timerIntervalRef.current);
-      timerIntervalRef.current = null;
-    }
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-    }
-    setIsRecording(false);
-  };
-
-  const cancelRecording = () => {
-    if (timerIntervalRef.current) {
-      clearInterval(timerIntervalRef.current);
-      timerIntervalRef.current = null;
-    }
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        // Clear chunks and stop without triggering the onstop processing
-        mediaRecorderRef.current.onstop = null;
-        mediaRecorderRef.current.stop();
-    }
-    if (mediaRecorderRef.current?.stream) {
-      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-    }
-    setIsRecording(false);
-    setRecordingTime(0);
-  };
-
-  const handleSendText = async () => {
-    if (!textInput.trim() || !apiKey) return;
-    setIsProcessingText(true);
-    try {
-      const currentOpenThreads = entries.flatMap((e: any) => (e.openThreads || []).map((t: any) => typeof t === 'string' ? t : t.text));
-      const result = await processTextSession(textInput, apiKey, currentOpenThreads);
-      addEntry(result);
-      setTextInput('');
-      setShowTextInput(false);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsProcessingText(false);
-    }
-  };
-
-  return (
-    <div className="flex flex-col items-center justify-start text-center w-full h-full pt-10 pb-[100px] space-y-12">
-      <div className="relative w-64 h-64 flex items-center justify-center">
-        {/* Glow effect */}
-        <div className={cn(
-          "absolute inset-0 bg-[#FFD54F] opacity-20 blur-[80px] rounded-full transition-all duration-1000",
-          (isRecording || isLiveActive) ? "scale-150 opacity-40 animate-pulse" : "scale-100"
-        )} />
-        
-        {/* Right Button: Text Input (Notebook) */}
-        {!isLiveActive && !isRecording && (
-          <button 
-            onClick={() => setShowTextInput(!showTextInput)}
-            className={cn(
-              "absolute right-[-40px] w-16 h-16 rounded-full flex items-center justify-center shadow-lg transition-all border border-white/20 active:scale-90 bg-gradient-to-tr from-[#FFA000] to-[#FFC107] text-[#0A3B66]",
-              showTextInput && "ring-4 ring-white/30"
-            )}
-          >
-            <Notebook size={28} strokeWidth={2} />
-          </button>
-        )}
-
-
-
-        {/* Main Mic Button - Click to Toggle for Reliability */}
-        <div className="relative group">
-          <button 
-            onClick={() => isRecording ? stopRecording() : startRecording()}
-            disabled={isLiveActive}
-            className={cn(
-              "relative z-10 w-[180px] h-[180px] bg-gradient-to-t from-[#FFA000] to-[#FFC107] rounded-full flex items-center justify-center text-white shadow-[0_15px_45px_rgba(255,160,0,0.5)] transition-all",
-              isRecording ? "scale-95 brightness-110 shadow-inner ring-8 ring-white/20" : "hover:scale-105 shadow-[0_12px_40px_rgba(255,160,0,0.4)]",
-              isLiveActive && "opacity-20 grayscale cursor-not-allowed"
-            )}
-          >
-            {isRecording ? <Square size={70} fill="white" className="rounded-xl animate-pulse" /> : <Mic size={90} strokeWidth={2.5} />}
-            {isRecording && (
-              <div className="absolute -bottom-10 left-1/2 -translate-x-1/2 bg-white text-[#0D3B66] px-4 py-1.5 rounded-full font-bold shadow-lg animate-bounce">
-                סיים
-              </div>
-            )}
-          </button>
-
-          {/* Left Button: LIVE (Small but visible) */}
-          {!isRecording && (
-            <button 
-              onClick={() => handleToggleVoice()}
-              className={cn(
-                "absolute left-[-50px] top-1/2 -translate-y-1/2 w-16 h-16 rounded-full flex flex-col items-center justify-center shadow-lg transition-all border border-white/20 active:scale-90",
-                isLiveActive 
-                  ? "bg-red-500 text-white ring-4 ring-red-500/30 animate-pulse" 
-                  : "bg-white/20 backdrop-blur-md text-white hover:bg-white/30"
-              )}
-            >
-              <div className="w-6 h-6 rounded-full border-2 border-current animate-pulse flex items-center justify-center">
-                <div className="w-2 h-2 rounded-full bg-current" />
-              </div>
-              <span className="text-[10px] font-bold mt-1 uppercase">LIVE</span>
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Text Input Area */}
-      {showTextInput && !isLiveActive && !isRecording && (
-        <div className="w-full max-w-md bg-white/20 backdrop-blur-2xl rounded-2xl p-4 border border-white/40 shadow-2xl animate-in fade-in slide-in-from-bottom-4 transition-all" dir="rtl">
-          <textarea
-            value={textInput}
-            onChange={(e) => setTextInput(e.target.value)}
-            placeholder="מה עובר עליך? כתוב כאן..."
-            className="w-full h-32 bg-transparent text-white placeholder-white/50 border-none outline-none resize-none text-lg leading-relaxed"
-            autoFocus
-          />
-          <div className="flex justify-between items-center mt-2">
-            <button 
-              onClick={() => setShowTextInput(false)}
-              className="text-white/60 hover:text-white text-sm"
-            >
-              ביטול
-            </button>
-            <button 
-              onClick={handleSendText}
-              disabled={isProcessingText || !textInput.trim()}
-              className="bg-[#FFC107] text-[#0A3B66] px-6 py-2 rounded-xl font-bold flex items-center gap-2 hover:bg-[#FFE082] transition-all disabled:opacity-50"
-            >
-              {isProcessingText ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
-              שמור
-            </button>
-          </div>
-        </div>
-      )}
-
-      {(isRecording || isLiveActive) && (
-        <div className="absolute -bottom-16 left-1/2 -translate-x-1/2 w-full scale-50">
-          <VoicePulse status={isLiveActive ? (liveStatus === 'speaking' ? 'speaking' : 'listening') : 'listening'} />
-        </div>
-      )}
-
-      <div className="space-y-4">
-        {isLiveActive ? (
-          <div className="bg-white/10 backdrop-blur-md rounded-[2.5rem] p-5 max-w-xs mx-auto border border-white/10 shadow-xl">
-            <p className="text-sm italic text-white/90 leading-relaxed">{liveTranscript || "מקשיב לך..."}</p>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center">
-            <h2 className="text-3xl font-medium text-[#89CFF0] opacity-80 tracking-tight">
-              {isProcessingAudio ? "מנתח הקלטה..." : (isRecording ? "מקשיב..." : "לחץ להקלטה")}
-            </h2>
-            {isProcessingAudio && (
-               <div className="mt-4 flex flex-col items-center gap-2">
-                 <Loader2 size={40} className="animate-spin text-[#FFD54F]" />
-                 <p className="text-white/40 text-sm italic">זה עשוי לקחת כמה שניות בלבד...</p>
-               </div>
-            )}
-            {isRecording && (
-              <>
-                <div className="text-2xl font-mono mt-3 text-[#FFD54F] drop-shadow-[0_0_8px_rgba(255,213,79,0.8)]">
-                  {Math.floor(recordingTime / 60).toString().padStart(2, '0')}:
-                  {(recordingTime % 60).toString().padStart(2, '0')}
-                </div>
-                <button 
-                  onClick={cancelRecording}
-                  className="mt-4 text-white/40 hover:text-white/60 text-sm flex items-center gap-2"
-                >
-                  <X size={14} /> ביטול הקלטה
-                </button>
-              </>
-            )}
-          </div>
-        )}
-      </div>
-
-    </div>
-  );
-}
-
-
-
-function InsightsTab({ 
-  isLiveActive,
-  input,
-  setInput,
-  handleSend,
-  isSending,
-  handleToggleVoice,
-  extractedQuotes
-}: { 
-  isLiveActive: boolean;
-  input: string;
-  setInput: (val: string) => void;
-  handleSend: () => void;
-  isSending: boolean;
-  handleToggleVoice: () => void;
-  extractedQuotes: DiaryEntry[];
-}) {
-  const { 
-    majorInsights, setMajorInsights,
-    chatMessages, apiKey, entries,
-    dailyGtd, quoteInsights, advices,
-    updateEntry, removeEntry
-  } = useAppStore();
-  const [showMajorInsights, setShowMajorInsights] = useState(false);
-  const [showAllTimeInsights, setShowAllTimeInsights] = useState(false);
-  const [isGeneratingMajor, setIsGeneratingMajor] = useState(false);
-  const [isChatExpanded, setIsChatExpanded] = useState(false);
-  const [isAdvicesExpanded, setIsAdvicesExpanded] = useState(false);
-  const [isQuotesExpanded, setIsQuotesExpanded] = useState(false);
-  const [isQuoteInsightsExpanded, setIsQuoteInsightsExpanded] = useState(false);
-
-  const [editingQuoteId, setEditingQuoteId] = useState<string | null>(null);
-  const [editQuoteText, setEditQuoteText] = useState('');
-
-
-  const handleGenerateMajor = async () => {
-    if (!apiKey) return;
-    setIsGeneratingMajor(true);
-    try {
-      const { knowledgeGraph, addTriples } = useAppStore.getState();
-      const { insights: majorList, triples } = await generateMajorInsights(entries, apiKey, majorInsights, knowledgeGraph);
-      setMajorInsights(majorList);
-      if (triples && triples.length > 0) {
-        addTriples(triples, Date.now());
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsGeneratingMajor(false);
-    }
-  };
-
-
-  useEffect(() => {
-    if (majorInsights.length === 0 && entries.length > 0 && apiKey) {
-      handleGenerateMajor();
-    }
-  }, [entries.length, apiKey]);
-
-  // Stop speech if navigating away
-  useEffect(() => {
-    return () => {
-      if ((window as any).audioWeekly) {
-         (window as any).audioWeekly.pause();
-         (window as any).audioWeekly = null;
-      }
-      window.speechSynthesis.cancel();
-    };
-  }, []);
-
-//
-
-  const chatEndRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (isChatExpanded) {
-      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [chatMessages.length, isChatExpanded]);
-
-  return (
-    <div className="w-full flex flex-col space-y-4 pb-12">
-      {/* Visual Diagnostic Block */}
-      <div id="diagnostic-quotes-data" style={{ display: 'none' }} data-total-entries={entries.length} data-extracted={extractedQuotes.length}>
-        {JSON.stringify(entries.map(e => ({ id: e.id, timestamp: e.timestamp, topics: e.topics, transcript: e.transcript.substring(0, 100) })))}
-      </div>
-      {/* Main AI Question Input (Now at Top) */}
-      <div className="w-full px-2 pt-2 sticky top-0 z-10 bg-gradient-to-b from-[#89CFF0]/80 to-transparent pb-4">
-        <div className="bg-white/30 backdrop-blur-2xl rounded-[2rem] border border-white/40 p-2 flex gap-2 items-center shadow-xl">
-          <input 
-            type="text" 
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-            disabled={isLiveActive}
-            placeholder={isLiveActive ? "הצאט הקולי פעיל..." : "שאל אותי על הכל..."}
-            className="flex-1 bg-white/20 rounded-2xl px-5 py-3.5 outline-none focus:ring-2 focus:ring-[#FFC107]/50 transition-all text-sm placeholder:text-[#0A3B66]/60 shadow-inner border border-white/20 disabled:opacity-50 text-[#0A3B66] font-medium"
-          />
-          <button 
-            onClick={() => handleToggleVoice()}
-            className={cn(
-              "w-12 h-12 rounded-2xl flex items-center justify-center transition-all shadow-lg active:scale-95",
-              isLiveActive ? "bg-red-500 text-white animate-pulse" : "bg-white/40 text-[#0A3B66] hover:bg-white/60"
-            )}
-            title="שיחה קולית"
-          >
-            <Mic size={20} />
-          </button>
-          <button 
-            onClick={() => setIsChatExpanded(!isChatExpanded)}
-            className={cn(
-              "w-12 h-12 rounded-2xl flex items-center justify-center transition-all shadow-lg active:scale-95",
-              isChatExpanded ? "bg-[#FFC107] text-[#0A3B66]" : "bg-white/40 text-[#0A3B66] hover:bg-white/60"
-            )}
-            title={isChatExpanded ? "סגור היסטוריה" : "הצג היסטוריה"}
-          >
-            <HistoryIcon size={20} />
-          </button>
-          {!isLiveActive && (
-            <button 
-              onClick={handleSend}
-              disabled={!input.trim() || isSending}
-              className="w-12 h-12 bg-[#FFC107] text-[#0A3B66] rounded-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-lg disabled:opacity-50"
-            >
-              {isSending ? <Loader2 size={18} className="animate-spin" /> : <Send size={20} />}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Expandable Chat History (Now below Input) */}
-      {isChatExpanded && (
-        <div className="flex-1 min-h-[400px] max-h-[70vh] overflow-y-auto px-2 space-y-4 custom-scrollbar bg-white/5 rounded-[2rem] border border-white/5 mx-2 p-4 animate-in slide-in-from-top-4 duration-300">
-          {chatMessages.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-white/20 p-8 text-center">
-              <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center mb-4">
-                <Brain size={32} />
-              </div>
-              <p className="text-sm">עדיין לא שלחת שאלות. שאל אותי כל דבר על המחשבות והתובנות שלך.</p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {chatMessages.map((msg, idx) => (
-                <div 
-                  key={idx} 
-                  className={cn(
-                    "flex flex-col max-w-[85%] animate-in fade-in slide-in-from-bottom-2",
-                    msg.role === 'user' ? "mr-auto text-right" : "ml-auto text-left"
-                  )}
-                >
-                  <div className={cn(
-                    "px-4 py-3 rounded-[1.5rem] text-sm leading-relaxed shadow-sm",
-                    msg.role === 'user' 
-                      ? "bg-[#FFD54F] text-[#0D3B66] rounded-tr-none" 
-                      : "bg-white/10 text-white/90 border border-white/5 rounded-tl-none"
-                  )}>
-                    {msg.content}
-                  </div>
-                  <span className="text-[9px] text-white/30 mt-1 px-1">
-                    {new Date(msg.timestamp).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                </div>
-              ))}
-              <div ref={chatEndRef} />
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Quote Insights */}
-      <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all relative group mt-4">
-        <button 
-          onClick={() => setIsQuoteInsightsExpanded(!isQuoteInsightsExpanded)}
-          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors relative z-10 text-right"
-        >
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-blue-400/20 rounded-2xl flex items-center justify-center text-[#0A3B66] shadow-[0_0_20px_rgba(59,130,246,0.3)] group-hover:rotate-12 transition-transform">
-              <Quote size={24} />
-            </div>
-            <div className="text-right">
-              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">תובנות מציטוטים</span>
-              <span className="block text-xs text-[#0A3B66]/60 font-medium mt-1">תובנות עמוקות שמופקות אחת ליומיים מהציטוטים שלך</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-3 text-[#0A3B66]/30">
-            {isQuoteInsightsExpanded ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
-          </div>
-        </button>
-
-        {isQuoteInsightsExpanded && (
-          <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2 cursor-default pl-2">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-[#2196F3]/20 to-transparent rounded-full -m-10 group-hover:scale-150 transition-transform duration-700 pointer-events-none"></div>
-            
-            <div className="space-y-4 relative z-10 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-              {(!quoteInsights?.insights || quoteInsights.insights.length === 0) ? (
-                <div className="py-10 flex flex-col items-center text-center space-y-4">
-                  <Quote size={40} className="text-[#0A3B66]/20" strokeWidth={1} />
-                  <p className="text-sm text-[#0A3B66]/40 italic">התובנות מהציטוטים שלך מתגבשות ברגעים אלו. הקפד לתייג ציטוטים ביומן עם #ציטוט...</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {quoteInsights.insights.map((insight, idx) => (
-                    <div key={idx} className="bg-white/10 hover:bg-white/15 p-4 rounded-3xl border border-white/30 transition-all">
-                      <div className="flex items-start gap-3">
-                        <div className="w-8 h-8 bg-blue-500/10 rounded-xl flex items-center justify-center text-blue-500 flex-shrink-0 mt-0.5">
-                          <Quote size={16} />
-                        </div>
-                        <div className="flex-1 text-right">
-                          <p className="text-sm leading-relaxed text-[#0A3B66] font-medium whitespace-pre-wrap">
-                            {insight}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                  {quoteInsights.lastUpdateDate && (
-                    <div className="pt-3 border-t border-white/20 mt-3 text-[10px] text-[#0A3B66]/50 text-left font-bold">
-                      עדכון אחרון: {new Date(quoteInsights.lastUpdateDate).toLocaleDateString('he-IL')}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* 3 Major Insights - Unified Section */}
-      <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all">
-        <div 
-          onClick={() => setShowMajorInsights(!showMajorInsights)}
-          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors group cursor-pointer"
-        >
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-[#FFC107] rounded-2xl flex items-center justify-center text-[#0A3B66] shadow-[0_0_20px_rgba(255,213,79,0.4)] group-hover:rotate-12 transition-transform">
-              <Star size={24} />
-            </div>
-            <div className="text-right">
-              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">תובנות עיקריות</span>
-              <span className="block text-xs text-[#0A3B66]/60 uppercase tracking-widest mt-1">יומי, גלובלי, שבועי, משמעותי ותת-מודע</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-             {isGeneratingMajor ? (
-               <Loader2 size={20} className="animate-spin text-[#0A3B66]" />
-             ) : (
-               <button 
-                 onClick={(e) => { e.stopPropagation(); handleGenerateMajor(); }}
-                 className="p-2 text-[#0A3B66]/40 hover:text-[#FFC107] transition-colors"
-               >
-                 <Activity size={18} />
-               </button>
-             )}
-            <div className="text-[#0A3B66]/30">
-              {showMajorInsights ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
-            </div>
-          </div>
-        </div>
-
-        {showMajorInsights && (
-          <div className="p-6 pt-0 space-y-4 animate-in fade-in slide-in-from-top-2 cursor-default">
-            {/* Daily GTD Insight - Always first */}
-            {dailyGtd?.insight && (
-              <div className="bg-[#FFC107]/20 rounded-3xl p-5 border border-[#FFC107]/30 group relative hover:bg-[#FFC107]/30 transition-all">
-                <div className="flex justify-between items-start mb-2 sticky top-0 bg-[#FFC107]/10 backdrop-blur-md z-10 p-2 mx-[-8px] rounded-xl border border-[#FFC107]/20 shadow-sm">
-                  <span className="text-[10px] font-bold text-[#0A3B66]/80 uppercase tracking-tighter flex items-center gap-1">
-                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#FFC107] animate-pulse"></span>
-                    תובנה יומית
-                  </span>
-                  <SpeechButton text={dailyGtd.insight} className="w-8 h-8 opacity-40 group-hover:opacity-100 text-[#0A3B66]" />
-                </div>
-                <p className="text-sm leading-relaxed text-[#0A3B66] whitespace-pre-wrap break-words font-medium">
-                  {dailyGtd.insight}
-                </p>
-              </div>
-            )}
-            {majorInsights.length > 0 ? (
-              majorInsights.map((insight, idx) => (
-                <div key={idx} className="bg-white/40 rounded-3xl p-5 border border-white/20 group relative hover:bg-white/60 transition-all">
-                  <div className="flex justify-between items-start mb-2 sticky top-0 bg-white/20 backdrop-blur-md z-10 p-2 mx-[-8px] rounded-xl border border-white/10 shadow-sm">
-                    <span className="text-[10px] font-bold text-[#0A3B66]/60 uppercase tracking-tighter">
-                      {idx === 0 ? "תובנה גלובלית" : idx === 1 ? "תובנה שבועית" : idx === 2 ? "תובנה נבחרת" : "תת מודע"}
-                    </span>
-                    <SpeechButton text={insight} className="w-8 h-8 opacity-40 group-hover:opacity-100 text-[#0A3B66]" />
-                  </div>
-                  <p className="text-sm leading-relaxed text-[#0A3B66] whitespace-pre-wrap break-words font-medium">
-                    {insight}
-                  </p>
-                </div>
-              ))
-            ) : (
-              <div className="text-center py-8 text-white/40 italic text-sm">
-                מעבד תובנות חדשות...
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-
-      {/* AI Advices Section */}
-      <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all relative group mt-4">
-        <button 
-          onClick={() => setIsAdvicesExpanded(!isAdvicesExpanded)}
-          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors relative z-10 text-right"
-        >
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-blue-400/20 rounded-2xl flex items-center justify-center text-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.3)] group-hover:rotate-12 transition-transform">
-              <Lightbulb size={24} />
-            </div>
-            <div className="text-right">
-              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">העצות שלי מה-AI</span>
-              <span className="block text-xs text-[#0A3B66]/60 uppercase tracking-widest mt-1">עבודה, משפחה, רווחה נפשית</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-3 text-[#0A3B66]/30">
-            {isAdvicesExpanded ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
-          </div>
-        </button>
-
-        {isAdvicesExpanded && (
-          <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2 cursor-default">
-            {(!advices?.history || advices.history.length === 0) ? (
-              <div className="py-6 flex flex-col items-center text-center space-y-4">
-                <Lightbulb size={32} className="text-[#0A3B66]/20 animate-pulse" />
-                <p className="text-sm text-[#0A3B66]/40 italic">ה-AI אוסף נתונים ומכין עצות רלוונטיות עבורך...</p>
-              </div>
-            ) : (
-              <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-                {advices.history.map((adv, idx) => (
-                  <div key={idx} className="bg-white/40 rounded-3xl p-5 border border-white/20 space-y-4 shadow-sm hover:bg-white/60 transition-all">
-                    <div className="flex items-center justify-between border-b border-white/30 pb-3 mb-3">
-                      <span className="text-[10px] text-[#0A3B66]/50 font-mono font-bold">
-                        {new Date(adv.timestamp).toLocaleDateString('he-IL')}
-                      </span>
-                      {idx === 0 && <span className="text-[9px] bg-[#FFC107]/20 text-[#0A3B66] px-2 py-0.5 rounded-full font-bold tracking-widest border border-[#FFC107]/30">העדכני ביותר</span>}
-                    </div>
-
-                    <div className="flex items-start gap-3">
-                       <Briefcase size={18} className="text-[#0A3B66] mt-0.5 shrink-0 opacity-70" />
-                       <div>
-                          <span className="block text-xs font-bold text-[#0A3B66] mb-1">עבודה</span>
-                          <p className="text-sm text-[#0A3B66] leading-relaxed font-medium">{adv.work}</p>
-                       </div>
-                    </div>
-
-                    <div className="flex items-start gap-3">
-                       <Home size={18} className="text-[#0A3B66] mt-0.5 shrink-0 opacity-70" />
-                       <div>
-                          <span className="block text-xs font-bold text-[#0A3B66] mb-1">משפחה</span>
-                          <p className="text-sm text-[#0A3B66] leading-relaxed font-medium">{adv.family}</p>
-                       </div>
-                    </div>
-
-                    <div className="flex items-start gap-3">
-                       <Heart size={18} className="text-[#0A3B66] mt-0.5 shrink-0 opacity-70" />
-                       <div>
-                          <span className="block text-xs font-bold text-[#0A3B66] mb-1">רווחה נפשית</span>
-                          <p className="text-sm text-[#0A3B66] leading-relaxed font-medium">{adv.mental}</p>
-                       </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Quotes Section */}
-      <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2.5rem] overflow-hidden shadow-2xl transition-all relative group mt-4">
-        <button 
-          onClick={() => setIsQuotesExpanded(!isQuotesExpanded)}
-          className="w-full p-6 flex items-center justify-between hover:bg-white/5 transition-colors relative z-10 text-right"
-        >
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-violet-400/20 rounded-2xl flex items-center justify-center text-violet-500 shadow-[0_0_20px_rgba(139,92,246,0.3)] group-hover:rotate-12 transition-transform">
-              <Quote size={24} />
-            </div>
-            <div className="text-right">
-              <span className="block font-bold text-[#0A3B66] text-lg leading-tight">ציטוטים</span>
-              <span className="block text-xs text-[#0A3B66]/60 uppercase tracking-widest mt-1">פניני חכמה והשראה מתוך כניסות היומן שלך</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-3 text-[#0A3B66]/30">
-            {isQuotesExpanded ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
-          </div>
-        </button>
-
-        {isQuotesExpanded && (
-          <div className="px-7 pb-7 pt-2 relative z-10 animate-in fade-in slide-in-from-top-2 cursor-default">
-            {extractedQuotes.length === 0 ? (
-              <div className="py-8 flex flex-col items-center text-center space-y-3">
-                <Quote size={32} className="text-[#0A3B66]/20 rotate-180" strokeWidth={1.5} />
-                <p className="text-sm text-[#0A3B66]/50 italic font-medium">אין עדיין ציטוטים ביומן שלך.</p>
-                <p className="text-xs text-[#0A3B66]/40 max-w-xs leading-relaxed">
-                  ה-AI יסווג באופן אוטומטי כניסות המכילות ציטוטים או תובנות מיוחדות תחת <span className="font-bold text-violet-500">ציטוטים</span>, או שתוכל להוסיף את ההאשטאג <span className="font-bold text-violet-500">#ציטוט</span>.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar animate-in fade-in duration-300">
-                {extractedQuotes.map((q) => (
-                  <div key={q.id} className="bg-white/40 rounded-3xl p-5 border border-white/20 space-y-3 shadow-sm hover:bg-white/60 transition-all relative group/item">
-                    <div className="flex items-center justify-between border-b border-white/30 pb-2 mb-2">
-                      <span className="text-[10px] text-[#0A3B66]/50 font-mono font-bold">
-                        {new Date(q.timestamp).toLocaleString('he-IL', { dateStyle: 'medium', timeStyle: 'short' })}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <SpeechButton text={q.transcript} className="bg-white/10 hover:bg-white/20 w-8 h-8 text-[#0A3B66] hover:text-[#0A3B66] transition-all rounded-xl" />
-                        <span className="bg-[#0D3B66]/10 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-[#0A3B66]/90">
-                          {q.mood}
-                        </span>
-                        <button 
-                          onClick={() => {
-                            setEditingQuoteId(q.id);
-                            setEditQuoteText(q.transcript);
-                          }}
-                          className="p-1.5 text-[#0A3B66]/40 hover:text-violet-600 hover:bg-violet-500/10 rounded-lg transition-all active:scale-95"
-                          title="ערוך כניסה"
-                        >
-                          <Pencil size={14} />
-                        </button>
-                        <button 
-                          onClick={() => window.confirm('האם למחוק כניסה זו?') && removeEntry(q.id)}
-                          className="p-1.5 text-[#0A3B66]/40 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all active:scale-95"
-                          title="מחק כניסה"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </div>
-                    {editingQuoteId === q.id ? (
-                      <div className="w-full mt-2">
-                        <textarea 
-                          value={editQuoteText}
-                          onChange={(e) => setEditQuoteText(e.target.value)}
-                          className="w-full bg-white/25 text-[#0A3B66] placeholder-[#0A3B66]/50 border border-white/30 outline-none resize-none rounded-xl p-3 text-sm leading-relaxed"
-                          rows={4}
-                          dir="rtl"
-                        />
-                        <div className="flex justify-end gap-2 mt-2">
-                          <button 
-                            onClick={() => setEditingQuoteId(null)} 
-                            className="text-[#0A3B66]/60 hover:text-[#0A3B66] text-xs px-3 py-1.5 transition-colors"
-                          >
-                            ביטול
-                          </button>
-                          <button 
-                            onClick={() => {
-                              updateEntry(q.id, editQuoteText);
-                              setEditingQuoteId(null);
-                            }} 
-                            className="bg-violet-600/80 hover:bg-violet-600 text-white text-xs px-4 py-1.5 rounded-lg transition-colors font-medium shadow-sm"
-                          >
-                            שמור שינויים
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex items-start gap-3">
-                        <Quote size={18} className="text-violet-500 shrink-0 opacity-40 rotate-180 mt-1" />
-                        <p className="text-sm text-[#0A3B66] leading-relaxed font-semibold italic whitespace-pre-wrap">
-                          {q.transcript}
-                        </p>
-                      </div>
-                    )}
-                    {q.topics.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-[#0A3B66]/10">
-                        {q.topics.map((t, i) => {
-                          const isQuoteTag = t.trim().includes('ציטוט') || t.trim().includes('ציטוטים') || t.trim().includes('#ציטוט') || t.trim().includes('#ציטוטים');
-                          return (
-                            <span 
-                              key={i} 
-                              className={cn(
-                                "text-[10px] px-2 py-0.5 rounded-full border transition-all",
-                                isQuoteTag 
-                                  ? "bg-violet-500/20 text-violet-700 border-violet-500/30 font-bold shadow-[0_0_8px_rgba(139,92,246,0.2)]" 
-                                  : "bg-[#0D3B66]/5 text-[#0D3B66]/70 border-[#0D3B66]/10"
-                              )}
-                            >
-                              #{t}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Insights History */}
-      <div className="bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[2rem] overflow-hidden shadow-2xl mt-4">
-        <div 
-          onClick={() => setShowAllTimeInsights(!showAllTimeInsights)}
-          className="w-full p-5 flex items-center justify-between hover:bg-white/10 cursor-pointer"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-blue-400/20 flex items-center justify-center text-blue-400">
-              <HistoryIcon size={20} />
-            </div>
-            <span className="font-bold text-white/90 text-sm">היסטוריית תובנות</span>
-          </div>
-          <div className="text-white/30">
-            {showAllTimeInsights ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-          </div>
-        </div>
-        {showAllTimeInsights && (
-          <div className="p-5 pt-0 space-y-4">
-            {entries.filter(e => e.insights && e.insights.length > 0).map(entry => (
-              <div key={entry.id} className="bg-white/40 rounded-2xl p-4 border border-white/20 shadow-sm transition-all hover:bg-white/60">
-                <div className="text-[10px] text-[#0A3B66]/50 mb-2 font-bold uppercase tracking-tight">
-                  {new Date(entry.timestamp).toLocaleDateString('he-IL')}
-                </div>
-                <div className="text-sm text-[#0A3B66] font-medium leading-relaxed">
-                  {entry.insights.join(' ')}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-//
-
-function HistoryTab() {
-  const { entries, removeEntry, updateEntry } = useAppStore();
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editText, setEditText] = useState('');
-  const [editTopics, setEditTopics] = useState<string[]>([]);
-  const [newTagVal, setNewTagVal] = useState('');
-
-  return (
-    <div className="w-full flex flex-col space-y-6 pb-12">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold flex items-center gap-2 text-[#0A3B66]">
-          <div className="w-10 h-10 rounded-2xl bg-[#FFC107]/20 flex items-center justify-center text-[#FFC107] shadow-sm">
-            <HistoryIcon size={20} />
-          </div>
-          יומן מחשבות
-        </h2>
-      </div>
-
-      {entries.length === 0 ? (
-        <div className="bg-white/10 backdrop-blur-md rounded-3xl p-8 text-center border border-white/10">
-          <p className="text-white/60">היומן שלך ריק. התחל להקליט מחשבות!</p>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {entries.map((entry) => (
-            <div key={entry.id} className="bg-white/10 backdrop-blur-md rounded-3xl p-5 border border-white/10 space-y-3 group relative overflow-hidden">
-              <div className="flex justify-between items-center">
-                <span className="text-xs font-bold text-white/50">
-                  {new Date(entry.timestamp).toLocaleString('he-IL', { dateStyle: 'medium', timeStyle: 'short' })}
-                </span>
-                <div className="flex items-center gap-2 z-10">
-                  <SpeechButton text={entry.transcript} className="bg-white/10 hover:bg-white/20 w-8 h-8 text-white/80 hover:text-white transition-all rounded-xl" />
-                  <span className="bg-white/20 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-white/90">
-                    {entry.mood}
-                  </span>
-                  <button 
-                    onClick={() => {
-                      setEditingId(entry.id);
-                      setEditText(entry.transcript);
-                      setEditTopics(entry.topics || []);
-                      setNewTagVal('');
-                    }}
-                    className="p-1.5 text-white/40 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-all active:scale-95"
-                    title="ערוך כניסה"
-                  >
-                    <Pencil size={14} />
-                  </button>
-                  <button 
-                    onClick={() => window.confirm('האם למחוק כניסה זו?') && removeEntry(entry.id)}
-                    className="p-1.5 text-white/40 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all active:scale-95"
-                    title="מחק כניסה"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </div>
-              {editingId === entry.id ? (
-                <div className="w-full mt-2 space-y-3">
-                  <textarea 
-                    value={editText}
-                    onChange={(e) => setEditText(e.target.value)}
-                    className="w-full bg-white/20 text-white placeholder-white/50 border border-white/20 outline-none resize-none rounded-xl p-3 text-sm leading-relaxed"
-                    rows={4}
-                    dir="rtl"
-                  />
-                  
-                  {/* Tag Editor UI */}
-                  <div className="bg-white/5 rounded-2xl p-3.5 border border-white/10 space-y-3">
-                    <label className="text-xs font-bold text-white/70 block">ניהול תגיות (#)</label>
-                    
-                    {/* Active tag chips */}
-                    <div className="flex flex-wrap gap-1.5 min-h-[24px] items-center">
-                      {editTopics.length === 0 ? (
-                        <span className="text-xs text-white/30 italic">אין תגיות עדיין...</span>
-                      ) : (
-                        editTopics.map((topic, index) => (
-                          <span 
-                            key={index} 
-                            onClick={() => setEditTopics(editTopics.filter((_, idx) => idx !== index))}
-                            className="bg-blue-400/20 text-blue-200 text-[10px] pl-2 pr-1.5 py-0.5 rounded-full border border-blue-400/30 flex items-center gap-1 group/tag cursor-pointer hover:bg-red-500/20 hover:text-red-200 hover:border-red-500/30 transition-all select-none"
-                            title="לחץ להסרה"
-                          >
-                            #{topic}
-                            <span className="text-[9px] text-white/40 group-hover/tag:text-red-400">×</span>
-                          </span>
-                        ))
-                      )}
-                    </div>
-                    
-                    {/* Input field to add tags */}
-                    <div className="flex items-center gap-2">
-                      <input 
-                        type="text" 
-                        value={newTagVal}
-                        onChange={(e) => setNewTagVal(e.target.value)}
-                        placeholder="הקלד תגית חדשה ולחץ אנטר..." 
-                        className="bg-white/10 text-white placeholder-white/40 text-xs px-3 py-2 rounded-xl border border-white/10 outline-none flex-grow"
-                        dir="rtl"
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            const val = newTagVal.trim().replace(/^#/g, '');
-                            if (val && !editTopics.includes(val)) {
-                              setEditTopics([...editTopics, val]);
-                              setNewTagVal('');
-                            }
-                          }
-                        }}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const val = newTagVal.trim().replace(/^#/g, '');
-                          if (val && !editTopics.includes(val)) {
-                            setEditTopics([...editTopics, val]);
-                            setNewTagVal('');
-                          }
-                        }}
-                        className="bg-white/10 hover:bg-white/20 text-white text-xs px-3.5 py-2 rounded-xl border border-white/10 transition-colors font-medium active:scale-95"
-                      >
-                        הוסף
-                      </button>
-                    </div>
-                    <p className="text-[9px] text-white/30 leading-normal">
-                      * תגיות אלו מעדכנות את הגרפים ומאפשרות חיפוש וסינון מתקדם. תגיות המוקלדות בטקסט (לדוגמה #עבודה) יתווספו אוטומטית בעת השמירה!
-                    </p>
-                  </div>
-
-                  <div className="flex justify-end gap-2 mt-2">
-                    <button 
-                      onClick={() => setEditingId(null)} 
-                      className="text-white/60 hover:text-white text-xs px-3 py-1.5 transition-colors"
-                    >
-                      ביטול
-                    </button>
-                    <button 
-                      onClick={() => {
-                        updateEntry(entry.id, editText, editTopics);
-                        setEditingId(null);
-                      }} 
-                      className="bg-emerald-500/80 hover:bg-emerald-500 text-white text-xs px-4 py-1.5 rounded-lg transition-colors font-medium shadow-sm active:scale-95"
-                    >
-                      שמור שינויים
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <p className="text-white/90 leading-relaxed text-sm whitespace-pre-wrap">
-                  {entry.transcript}
-                </p>
-              )}
-              {entry.topics.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {entry.topics.map((t, i) => (
-                    <span key={i} className="bg-blue-400/20 text-blue-200 text-[10px] px-2 py-0.5 rounded-full border border-blue-400/30">
-                      #{t}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }

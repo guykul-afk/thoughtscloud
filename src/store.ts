@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { ProcessedSession, OKFTriple } from './services/ai';
 import { FirebaseStorageService } from './services/FirebaseStorageService';
-import { runMigrationToFirebase } from './services/migrateToFirebase';
+import { cleanEntityName, isStopwordOrInvalid } from './utils/entityResolution';
 
 export interface OpenThread {
     text: string;
@@ -23,12 +23,27 @@ export interface ChatMessage {
 
 export type Triple = OKFTriple; // Backwards compatible alias
 
+export interface IdentityPersona {
+    coreBeliefs: string[];
+    activeGoals: string[];
+    psychologicalProfile: {
+        strengths: string[];
+        focusAreas: string[];
+        blindSpots: string[];
+    };
+    lastUpdated: number;
+}
+
 export interface GraphNode {
     id: string;
     label: string;
     cluster?: string;
     val?: number; // importance weight
     type?: string; // Person, Project, Concept, Emotion, Other
+    occurrence_refs?: string[];
+    evidence_strength?: number;
+    status?: 'pending' | 'succeeded' | 'failed';
+    evaluation?: string;
 }
 
 export interface GraphEdge {
@@ -79,6 +94,7 @@ interface AppState {
     dailyGtd: {
         insight?: string;
         lastDate?: string;
+        lastEntryIds?: string[];
     } | null;
 
     majorInsights: string[];
@@ -95,10 +111,13 @@ interface AppState {
     preferredApiVersion?: string | null;
     syncStatus: 'synced' | 'saving' | 'error';
     syncError: string | null;
+    identityPersona: IdentityPersona | null;
     
     // Actions
     loadInitialState: () => Promise<void>;
     setApiKey: (key: string) => void;
+    setIdentityPersona: (persona: IdentityPersona) => void;
+    updateIdentityPersonaAction: () => Promise<void>;
     addEntry: (entry: ProcessedSession) => void;
     removeEntry: (id: string) => void;
     updateEntry: (id: string, transcript: string, topics?: string[]) => void;
@@ -119,6 +138,7 @@ interface AppState {
     setGdriveConnected: (connected: boolean) => void;
     setPreferredModel: (modelName: string, apiVersion: string) => void;
     reprocessAllEntries: (onProgress?: (current: number, total: number) => void) => Promise<void>;
+    calibratePredictionsAction: () => Promise<void>;
 }
 
 async function performFirebaseWrite(set: any, writeFn: () => Promise<any>) {
@@ -158,18 +178,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
     isGdriveConnected: false,
     preferredModel: null,
     preferredApiVersion: null,
+    identityPersona: null,
 
     loadInitialState: async () => {
         set({ syncStatus: 'saving' });
         try {
-            if (!localStorage.getItem('has_migrated_to_firebase')) {
-                await runMigrationToFirebase();
-            } else {
-                await FirebaseStorageService.init();
-            }
+            await FirebaseStorageService.init();
             let entries = await FirebaseStorageService.loadAllEntries();
             const graph = await FirebaseStorageService.loadKnowledgeGraph();
             let insights = await FirebaseStorageService.loadInsights();
+            const identityPersona = await FirebaseStorageService.loadIdentityPersona();
 
             // Support pre-generated insights from diary_state.json if server insights are missing
             let quoteInsights = insights?.quoteInsights || null;
@@ -224,6 +242,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
                 advices: insights?.advices || null,
                 quoteInsights: quoteInsights,
                 lastMajorInsightsCount: insights?.lastMajorInsightsCount || 0,
+                identityPersona,
                 syncStatus: 'synced'
             });
         } catch (e) {
@@ -236,6 +255,18 @@ export const useAppStore = create<AppState>()((set, get) => ({
     setApiKey: (apiKey) => {
         localStorage.setItem('gemini_api_key', apiKey);
         set({ apiKey });
+    },
+    setIdentityPersona: (identityPersona) => {
+        set({ identityPersona });
+        performFirebaseWrite(set, () => FirebaseStorageService.saveIdentityPersona(identityPersona));
+    },
+    updateIdentityPersonaAction: async () => {
+        const { entries, identityPersona, apiKey } = get();
+        if (!apiKey || entries.length === 0) return;
+        const { generateUpdatedPersona } = await import('./services/identity');
+        const updated = await generateUpdatedPersona(identityPersona, entries, apiKey);
+        set({ identityPersona: updated });
+        performFirebaseWrite(set, () => FirebaseStorageService.saveIdentityPersona(updated));
     },
     setGdriveConnected: (isGdriveConnected) => set({ isGdriveConnected }),
     setAdvices: (advices) => {
@@ -256,6 +287,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         let finalEntries: DiaryEntry[] = [];
         let newGraph: KnowledgeGraph = { nodes: [], edges: [] };
         let newEntry: DiaryEntry | null = null;
+        const entryId = Math.random().toString(36).slice(2, 9);
 
         set((state) => {
             let updatedEntries = [...state.entries];
@@ -269,53 +301,76 @@ export const useAppStore = create<AppState>()((set, get) => ({
                         ? { subject: rawT[0], relation: rawT[1], object: rawT[2] } as OKFTriple
                         : rawT as OKFTriple;
                     
-                    const sLower = (t.subject || '').trim();
-                    const oLower = (t.object || '').trim();
-                    if (!sLower || !oLower) return;
+                    const cleanSubject = cleanEntityName(t.subject);
+                    const cleanObject = cleanEntityName(t.object);
+                    if (!cleanSubject || !cleanObject) return;
+                    if (isStopwordOrInvalid(cleanSubject) || isStopwordOrInvalid(cleanObject)) return;
 
-                    if (!newNodes.find(n => n.id === sLower)) {
-                        newNodes.push({ 
-                            id: sLower, 
-                            label: sLower, 
+                    // Process subject node
+                    let sNode = newNodes.find(n => n.id === cleanSubject);
+                    if (!sNode) {
+                        sNode = { 
+                            id: cleanSubject, 
+                            label: cleanSubject, 
                             val: 1,
-                            type: t.subjectType || 'Other'
-                        });
+                            type: t.subjectType || 'Other',
+                            occurrence_refs: [entryId],
+                            evidence_strength: 1/3,
+                            status: t.subjectType === 'Prediction' ? 'pending' : undefined
+                        };
+                        newNodes.push(sNode);
                     } else {
-                        const node = newNodes.find(n => n.id === sLower);
-                        if (node) {
-                            node.val = (node.val || 1) + 0.1;
-                            if (t.subjectType && t.subjectType !== 'Other') {
-                                node.type = t.subjectType;
-                            }
+                        sNode.val = (sNode.val || 1) + 0.1;
+                        if (t.subjectType && t.subjectType !== 'Other') {
+                            sNode.type = t.subjectType;
                         }
+                        if (t.subjectType === 'Prediction' && !sNode.status) {
+                            sNode.status = 'pending';
+                        }
+                        if (!sNode.occurrence_refs) sNode.occurrence_refs = [];
+                        if (!sNode.occurrence_refs.includes(entryId)) {
+                            sNode.occurrence_refs.push(entryId);
+                        }
+                        sNode.evidence_strength = Math.min(1, sNode.occurrence_refs.length / 3);
                     }
 
-                    if (!newNodes.find(n => n.id === oLower)) {
-                        newNodes.push({ 
-                            id: oLower, 
-                            label: oLower, 
+                    // Process object node
+                    let oNode = newNodes.find(n => n.id === cleanObject);
+                    if (!oNode) {
+                        oNode = { 
+                            id: cleanObject, 
+                            label: cleanObject, 
                             val: 1,
-                            type: t.objectType || 'Other'
-                        });
+                            type: t.objectType || 'Other',
+                            occurrence_refs: [entryId],
+                            evidence_strength: 1/3,
+                            status: t.objectType === 'Prediction' ? 'pending' : undefined
+                        };
+                        newNodes.push(oNode);
                     } else {
-                        const node = newNodes.find(n => n.id === oLower);
-                        if (node) {
-                            node.val = (node.val || 1) + 0.1;
-                            if (t.objectType && t.objectType !== 'Other') {
-                                node.type = t.objectType;
-                            }
+                        oNode.val = (oNode.val || 1) + 0.1;
+                        if (t.objectType && t.objectType !== 'Other') {
+                            oNode.type = t.objectType;
                         }
+                        if (t.objectType === 'Prediction' && !oNode.status) {
+                            oNode.status = 'pending';
+                        }
+                        if (!oNode.occurrence_refs) oNode.occurrence_refs = [];
+                        if (!oNode.occurrence_refs.includes(entryId)) {
+                            oNode.occurrence_refs.push(entryId);
+                        }
+                        oNode.evidence_strength = Math.min(1, oNode.occurrence_refs.length / 3);
                     }
 
                     const edgeExists = newEdges.find(e => 
-                        e.source === sLower && 
-                        e.target === oLower && 
+                        e.source === cleanSubject && 
+                        e.target === cleanObject && 
                         e.relation === t.relation
                     );
                     if (!edgeExists) {
                         newEdges.push({ 
-                            source: sLower, 
-                            target: oLower, 
+                            source: cleanSubject, 
+                            target: cleanObject, 
                             relation: t.relation, 
                             timestamp,
                             domain: t.domain,
@@ -328,7 +383,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             }
 
             newEntry = {
-                id: Math.random().toString(36).slice(2, 9),
+                id: entryId,
                 timestamp,
                 ...entry,
                 openThreads: [] // initialize empty since threads are now global
@@ -430,6 +485,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
     addTriples: (triples, timestamp) => {
         let newGraph: KnowledgeGraph | null = null;
+        const refId = String(timestamp);
         set((state) => {
             const newNodes = [...state.knowledgeGraph.nodes];
             const newEdges = [...state.knowledgeGraph.edges];
@@ -439,54 +495,78 @@ export const useAppStore = create<AppState>()((set, get) => ({
                     ? { subject: rawT[0], relation: rawT[1], object: rawT[2] } as OKFTriple
                     : rawT as OKFTriple;
 
-                const sLower = (t.subject || '').trim();
-                const oLower = (t.object || '').trim();
-                if (!sLower || !oLower) return;
+                const cleanSubject = cleanEntityName(t.subject);
+                const cleanObject = cleanEntityName(t.object);
+                
+                if (!cleanSubject || !cleanObject) return;
+                if (isStopwordOrInvalid(cleanSubject) || isStopwordOrInvalid(cleanObject)) return;
 
-                if (!newNodes.find(n => n.id === sLower)) {
-                    newNodes.push({ 
-                        id: sLower, 
-                        label: sLower, 
+                // Process subject
+                let sNode = newNodes.find(n => n.id === cleanSubject);
+                if (!sNode) {
+                    sNode = { 
+                        id: cleanSubject, 
+                        label: cleanSubject, 
                         val: 1, 
-                        type: t.subjectType || 'Other' 
-                    });
+                        type: t.subjectType || 'Other',
+                        occurrence_refs: [refId],
+                        evidence_strength: 1/3,
+                        status: t.subjectType === 'Prediction' ? 'pending' : undefined
+                    };
+                    newNodes.push(sNode);
                 } else {
-                    const node = newNodes.find(n => n.id === sLower);
-                    if (node) {
-                        node.val = (node.val || 1) + 0.1;
-                        if (t.subjectType && t.subjectType !== 'Other') {
-                            node.type = t.subjectType;
-                        }
+                    sNode.val = (sNode.val || 1) + 0.1;
+                    if (t.subjectType && t.subjectType !== 'Other') {
+                        sNode.type = t.subjectType;
                     }
+                    if (t.subjectType === 'Prediction' && !sNode.status) {
+                        sNode.status = 'pending';
+                    }
+                    if (!sNode.occurrence_refs) sNode.occurrence_refs = [];
+                    if (!sNode.occurrence_refs.includes(refId)) {
+                        sNode.occurrence_refs.push(refId);
+                    }
+                    sNode.evidence_strength = Math.min(1, sNode.occurrence_refs.length / 3);
                 }
 
-                if (!newNodes.find(n => n.id === oLower)) {
-                    newNodes.push({ 
-                        id: oLower, 
-                        label: oLower, 
+                // Process object
+                let oNode = newNodes.find(n => n.id === cleanObject);
+                if (!oNode) {
+                    oNode = { 
+                        id: cleanObject, 
+                        label: cleanObject, 
                         val: 1, 
-                        type: t.objectType || 'Other' 
-                    });
+                        type: t.objectType || 'Other',
+                        occurrence_refs: [refId],
+                        evidence_strength: 1/3,
+                        status: t.objectType === 'Prediction' ? 'pending' : undefined
+                    };
+                    newNodes.push(oNode);
                 } else {
-                    const node = newNodes.find(n => n.id === oLower);
-                    if (node) {
-                        node.val = (node.val || 1) + 0.1;
-                        if (t.objectType && t.objectType !== 'Other') {
-                            node.type = t.objectType;
-                        }
+                    oNode.val = (oNode.val || 1) + 0.1;
+                    if (t.objectType && t.objectType !== 'Other') {
+                        oNode.type = t.objectType;
                     }
+                    if (t.objectType === 'Prediction' && !oNode.status) {
+                        oNode.status = 'pending';
+                    }
+                    if (!oNode.occurrence_refs) oNode.occurrence_refs = [];
+                    if (!oNode.occurrence_refs.includes(refId)) {
+                        oNode.occurrence_refs.push(refId);
+                    }
+                    oNode.evidence_strength = Math.min(1, oNode.occurrence_refs.length / 3);
                 }
 
                 const edgeExists = newEdges.find(e => 
-                    e.source === sLower && 
-                    e.target === oLower && 
+                    e.source === cleanSubject && 
+                    e.target === cleanObject && 
                     e.relation === t.relation
                 );
 
                 if (!edgeExists) {
                     newEdges.push({ 
-                        source: sLower, 
-                        target: oLower, 
+                        source: cleanSubject, 
+                        target: cleanObject, 
                         relation: t.relation, 
                         timestamp,
                         domain: t.domain,
@@ -629,5 +709,32 @@ export const useAppStore = create<AppState>()((set, get) => ({
         performFirebaseWrite(set, () => FirebaseStorageService.saveKnowledgeGraph(knowledgeGraph));
     },
     setGraphInsights: (graphInsights) => set({ graphInsights }),
+    calibratePredictionsAction: async () => {
+        const { entries, knowledgeGraph, apiKey } = get();
+        if (!apiKey || entries.length === 0) return;
+        const { calibratePredictions } = await import('./services/calibration');
+        const calibrations = await calibratePredictions(entries, knowledgeGraph, apiKey);
+        if (calibrations.length > 0) {
+            let newGraph: KnowledgeGraph | null = null;
+            set((state) => {
+                const newNodes = state.knowledgeGraph.nodes.map(node => {
+                    const match = calibrations.find(c => c.id === node.id);
+                    if (match) {
+                        return {
+                            ...node,
+                            status: match.status,
+                            evaluation: match.evaluation
+                        };
+                    }
+                    return node;
+                });
+                newGraph = { ...state.knowledgeGraph, nodes: newNodes };
+                return { knowledgeGraph: newGraph };
+            });
+            if (newGraph) {
+                performFirebaseWrite(set, () => FirebaseStorageService.saveKnowledgeGraph(newGraph!));
+            }
+        }
+    },
 }));
 

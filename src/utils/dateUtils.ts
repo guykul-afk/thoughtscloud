@@ -46,3 +46,10 @@ export function isWithinCurrentWeek(timestamp: number): boolean {
   const now = new Date();
   return timestamp >= getStartOfCurrentWeek(now) && timestamp <= getEndOfCurrentWeek(now);
 }
+
+export function getWeekPeriodKey(timestamp: number): string {
+  const d = new Date(timestamp);
+  const startOfWeek = new Date(getStartOfCurrentWeek(d));
+  const year = startOfWeek.getFullYear();
+  return `week_${year}-${String(startOfWeek.getMonth() + 1).padStart(2, '0')}-${String(startOfWeek.getDate()).padStart(2, '0')}`;
+}
