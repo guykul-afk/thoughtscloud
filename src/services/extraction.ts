@@ -22,6 +22,11 @@ export interface ProcessedSession {
     sentiment?: number; // Overall entry sentiment
     narrative_signature?: string[]; // Emotional narrative signature (edit distance sequence)
     triples: OKFTriple[];
+    quotes?: {
+        text: string;
+        source?: string;
+        contexts?: string[];
+    }[];
 }
 
 // Helper to convert Blob to base64
@@ -61,7 +66,7 @@ export const parseAIResponse = (text: string): any => {
         }
     } catch (e) {
         console.error("Failed to parse JSON response from AI:", text);
-        return text; // fallback to raw text
+        return {}; // fallback to empty object to prevent crashing callers with TypeError
     }
 };
 
@@ -143,6 +148,13 @@ export async function processAudioSession(audioBlob: Blob, apiKey: string, curre
         "subjectType": "MVP Entity type",
         "objectType": "MVP Entity type"
       }
+    ],
+    "quotes": [
+      {
+        "text": "The exact quote text. Extract this if the user mentions a quote, cites a source/book, or uses the word 'ציטוט' (e.g. 'הנה ציטוט...', 'אני רוצה לצטט...').",
+        "source": "The source/author/origin of the quote if mentioned (e.g. 'אלברט איינשטיין', 'בודהה', 'הספר שקראתי'), or null if not mentioned.",
+        "contexts": ["Array of related themes/topics for the quote in Hebrew."]
+      }
     ]
   }
 
@@ -217,6 +229,13 @@ export async function processTextSession(textData: string, apiKey: string, curre
         "sentiment": 1/0/-1,
         "subjectType": "MVP Entity type",
         "objectType": "MVP Entity type"
+      }
+    ],
+    "quotes": [
+      {
+        "text": "The exact quote text. Extract this if the text contains a quote (either explicitly using the word 'ציטוט', citing a source/book, or containing text in quotation marks).",
+        "source": "The source/author/origin of the quote if mentioned (e.g. 'אלברט איינשטיין', 'שייקספיר', 'הספר שקראתי'), or null if not mentioned.",
+        "contexts": ["Array of related themes/topics for the quote in Hebrew."]
       }
     ]
   }

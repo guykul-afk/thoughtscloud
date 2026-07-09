@@ -3,6 +3,13 @@ import type { ProcessedSession, OKFTriple } from './services/ai';
 import { FirebaseStorageService } from './services/FirebaseStorageService';
 import { cleanEntityName, isStopwordOrInvalid } from './utils/entityResolution';
 
+if (typeof window !== 'undefined') {
+    (window as any).FirebaseStorageService = FirebaseStorageService;
+    import('./services/ai').then(m => {
+        (window as any).processTextSession = m.processTextSession;
+    });
+}
+
 export interface OpenThread {
     text: string;
     isResolved: boolean;
@@ -605,6 +612,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
                 onProgress(i + 1, entries.length);
             }
             try {
+                // Wait 1.5 seconds between requests to avoid rate limits (HTTP 429)
+                if (i > 0) {
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+                }
                 // Re-analyze the text using processTextSession
                 const processed = await processTextSession(entry.transcript, apiKey);
                 
@@ -613,7 +624,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
                     triples: processed.triples || [],
                     topics: processed.topics || entry.topics,
                     insights: processed.insights || entry.insights,
-                    mood: processed.mood || entry.mood
+                    mood: processed.mood || entry.mood,
+                    quotes: processed.quotes || entry.quotes || []
                 };
                 updatedEntries.push(updatedEntry);
 

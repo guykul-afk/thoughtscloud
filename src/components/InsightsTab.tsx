@@ -478,11 +478,40 @@ export default function InsightsTab({
                         </div>
                       </div>
                     ) : (
-                      <div className="flex items-start gap-3">
-                        <Quote size={18} className="text-violet-500 shrink-0 opacity-40 rotate-180 mt-1" />
-                        <p className="text-sm text-[#0A3B66] leading-relaxed font-semibold italic whitespace-pre-wrap">
-                          {q.transcript}
-                        </p>
+                      <div className="space-y-3">
+                        {(q as any).quotes && (q as any).quotes.length > 0 ? (
+                          (q as any).quotes.map((quote: any, idx: number) => (
+                            <div key={idx} className="border-r-4 border-violet-500 pr-3 py-1 space-y-1 text-right">
+                              <div className="flex items-start gap-3 justify-start flex-row-reverse">
+                                <Quote size={18} className="text-violet-500 shrink-0 opacity-40 rotate-180 mt-1" />
+                                <p className="text-sm text-[#0A3B66] leading-relaxed font-semibold italic whitespace-pre-wrap">
+                                  {quote.text}
+                                </p>
+                              </div>
+                              {quote.source && (
+                                <p className="text-xs text-[#0A3B66]/70 ml-7 font-medium">
+                                  — <span className="font-bold">{quote.source}</span>
+                                </p>
+                              )}
+                              {quote.contexts && quote.contexts.length > 0 && (
+                                <div className="flex flex-wrap gap-1 ml-7 mt-1 justify-end">
+                                  {quote.contexts.map((ctx: string, ci: number) => (
+                                    <span key={ci} className="text-[9px] bg-violet-500/10 text-violet-600 px-1.5 py-0.5 rounded">
+                                      {ctx}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ))
+                        ) : (
+                          <div className="flex items-start gap-3">
+                            <Quote size={18} className="text-violet-500 shrink-0 opacity-40 rotate-180 mt-1" />
+                            <p className="text-sm text-[#0A3B66] leading-relaxed font-semibold italic whitespace-pre-wrap">
+                              {q.transcript}
+                            </p>
+                          </div>
+                        )}
                       </div>
                     )}
                     {q.topics && q.topics.length > 0 && (

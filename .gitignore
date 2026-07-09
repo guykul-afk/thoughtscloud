@@ -7,3 +7,4 @@ dist
 .gemini
 dist-ssr
 *.log
+backups_safety/

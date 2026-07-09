@@ -210,11 +210,14 @@ export default function App() {
         /#ציטוט/.test(normalizedTranscript) || 
         /#\s*ציטוט/.test(normalizedTranscript);
 
+      const hasExplicitQuoteWord = normalizedTranscript.toLowerCase().includes('ציטוט');
+      const hasExtractedQuotes = !!(entry as any).quotes && (entry as any).quotes.length > 0;
+
       if (hasQuoteHashtag) {
         console.log(`Matched hashtag in entry [${entry.id}]:`, entry.transcript.substring(0, 100));
       }
 
-      const matched = hasQuoteTopic || hasQuoteHashtag;
+      const matched = hasQuoteTopic || hasQuoteHashtag || hasExplicitQuoteWord || hasExtractedQuotes;
       console.log(`Entry [${entry.id}] date [${new Date(entry.timestamp).toLocaleDateString('he-IL')}]: matched = ${matched}, topics =`, entry.topics);
       return matched;
     });
