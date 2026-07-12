@@ -27,13 +27,13 @@ function getEditDistance(a: string[], b: string[]): number {
  */
 export async function getHybridContext(
   query: string,
-  _entries: DiaryEntry[],
+  entries: DiaryEntry[],
   graph: KnowledgeGraph,
   apiKey: string,
   limitCount = 5
 ): Promise<{ contextText: string; expandedNodeIds: string[] }> {
   const { FirebaseStorageService } = await import('./FirebaseStorageService');
-  const similar = await FirebaseStorageService.getSimilarEntries(query, apiKey, limitCount);
+  const similar = await FirebaseStorageService.getSimilarEntries(query, apiKey, limitCount, entries);
 
   if (similar.length === 0) {
     return { contextText: "אין רשומות דומות סמנטית שנמצאו.", expandedNodeIds: [] };

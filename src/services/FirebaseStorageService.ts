@@ -1,7 +1,91 @@
-import { collection, doc, setDoc, getDoc, getDocs, getDocsFromServer, getDocFromServer, deleteDoc, query, orderBy } from 'firebase/firestore';
+import { collection, doc, setDoc, getDoc, getDocs, getDocsFromServer, getDocFromServer, deleteDoc, query, orderBy, where } from 'firebase/firestore';
 import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { db, auth } from './firebase';
 import type { DiaryEntry, KnowledgeGraph } from '../store';
+
+class IndexedDBCache {
+    private static dbName = 'ThoughtCloudCache';
+    private static storeName = 'diary_entries';
+    private static version = 1;
+
+    static open(): Promise<IDBDatabase> {
+        return new Promise<IDBDatabase>((resolve, reject) => {
+            if (typeof indexedDB === 'undefined') {
+                reject(new Error('IndexedDB is not supported/defined in this environment'));
+                return;
+            }
+            const request = indexedDB.open(this.dbName, this.version);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve(request.result);
+            request.onupgradeneeded = () => {
+                const db = request.result;
+                if (!db.objectStoreNames.contains(this.storeName)) {
+                    db.createObjectStore(this.storeName, { keyPath: 'id' });
+                }
+            };
+        });
+    }
+
+    static getAll(): Promise<DiaryEntry[]> {
+        return this.open().then((db) => {
+            return new Promise<DiaryEntry[]>((resolve, reject) => {
+                const tx = db.transaction(this.storeName, 'readonly');
+                const store = tx.objectStore(this.storeName);
+                const request = store.getAll();
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => resolve(request.result);
+            });
+        }).catch((err) => {
+            console.warn("[IndexedDBCache] getAll failed:", err);
+            return [] as DiaryEntry[];
+        });
+    }
+
+    static putAll(entries: DiaryEntry[]): Promise<void> {
+        return this.open().then((db) => {
+            return new Promise<void>((resolve, reject) => {
+                const tx = db.transaction(this.storeName, 'readwrite');
+                const store = tx.objectStore(this.storeName);
+                entries.forEach(entry => store.put(entry));
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }).catch((err) => {
+            console.warn("[IndexedDBCache] putAll failed:", err);
+            return Promise.resolve();
+        });
+    }
+
+    static put(entry: DiaryEntry): Promise<void> {
+        return this.open().then((db) => {
+            return new Promise<void>((resolve, reject) => {
+                const tx = db.transaction(this.storeName, 'readwrite');
+                const store = tx.objectStore(this.storeName);
+                store.put(entry);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }).catch((err) => {
+            console.warn("[IndexedDBCache] put failed:", err);
+            return Promise.resolve();
+        });
+    }
+
+    static delete(id: string): Promise<void> {
+        return this.open().then((db) => {
+            return new Promise<void>((resolve, reject) => {
+                const tx = db.transaction(this.storeName, 'readwrite');
+                const store = tx.objectStore(this.storeName);
+                store.delete(id);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }).catch((err) => {
+            console.warn("[IndexedDBCache] delete failed:", err);
+            return Promise.resolve();
+        });
+    }
+}
 
 export class FirebaseStorageService {
     private static uid: string | null = null;
@@ -114,6 +198,14 @@ export class FirebaseStorageService {
         }
         
         await setDoc(docRef, firestoreEntry);
+
+        // Save to IndexedDB cache
+        try {
+            await IndexedDBCache.put(entry);
+            console.log(`[FirebaseStorageService] Saved entry ${entry.id} to IndexedDB cache`);
+        } catch (err) {
+            console.warn("[FirebaseStorageService] Failed to save entry to IndexedDB:", err);
+        }
     }
 
     static async deleteEntry(id: string, timestamp: number): Promise<void> {
@@ -123,6 +215,14 @@ export class FirebaseStorageService {
         const docRef = doc(db, `users/${uid}/entries`, docId);
         
         await deleteDoc(docRef);
+
+        // Delete from IndexedDB cache
+        try {
+            await IndexedDBCache.delete(id);
+            console.log(`[FirebaseStorageService] Deleted entry ${id} from IndexedDB cache`);
+        } catch (err) {
+            console.warn("[FirebaseStorageService] Failed to delete entry from IndexedDB:", err);
+        }
     }
 
     static async saveKnowledgeGraph(graph: KnowledgeGraph): Promise<void> {
@@ -151,19 +251,44 @@ export class FirebaseStorageService {
 
     static async loadAllEntries(): Promise<DiaryEntry[]> {
         const uid = await this.getUid();
+        
+        // 1. Try to load cached entries from IndexedDB
+        let cachedEntries: DiaryEntry[] = [];
+        try {
+            cachedEntries = await IndexedDBCache.getAll();
+            console.log(`[FirebaseStorageService] Loaded ${cachedEntries.length} entries from IndexedDB cache`);
+        } catch (err) {
+            console.warn("[FirebaseStorageService] Failed to load entries from IndexedDB cache:", err);
+        }
+
+        // 2. Find the latest timestamp from cached entries to use for delta sync
+        let lastTimestamp = 0;
+        if (cachedEntries.length > 0) {
+            // Sort to find the latest
+            cachedEntries.sort((a, b) => b.timestamp - a.timestamp);
+            lastTimestamp = cachedEntries[0].timestamp;
+        }
+
         const entriesRef = collection(db, `users/${uid}/entries`);
-        const q = query(entriesRef, orderBy('timestamp', 'desc'));
+        let q;
+        if (lastTimestamp > 0) {
+            q = query(entriesRef, where('timestamp', '>', lastTimestamp), orderBy('timestamp', 'desc'));
+            console.log(`[FirebaseStorageService] Fetching delta updates since ${new Date(lastTimestamp).toISOString()}`);
+        } else {
+            q = query(entriesRef, orderBy('timestamp', 'desc'));
+            console.log("[FirebaseStorageService] No cache found. Fetching all entries from server");
+        }
         
         let querySnapshot;
         try {
             querySnapshot = await getDocsFromServer(q);
-            console.log("[FirebaseStorageService] Loaded entries from server successfully");
+            console.log(`[FirebaseStorageService] Fetched ${querySnapshot.size} delta entries from server`);
         } catch (err) {
-            console.warn("[FirebaseStorageService] Failed to load entries from server, falling back to cache:", err);
+            console.warn("[FirebaseStorageService] Failed to load entries from server, falling back to cache query:", err);
             querySnapshot = await getDocs(q);
         }
         
-        const entries: DiaryEntry[] = [];
+        const newEntries: DiaryEntry[] = [];
         querySnapshot.forEach((doc) => {
             const data = doc.data();
             if (data.triples) {
@@ -196,15 +321,33 @@ export class FirebaseStorageService {
                 });
             }
             if (data.embedding) {
-                // Convert vectorValue back to array if needed, though usually it comes back as a VectorValue object
                 data.embedding = Array.isArray(data.embedding) ? data.embedding : data.embedding.toArray ? data.embedding.toArray() : null;
             }
-            entries.push(data as DiaryEntry);
+            newEntries.push(data as DiaryEntry);
         });
-        return entries;
+
+        // 3. Save new entries to IndexedDB and merge with cache
+        if (newEntries.length > 0) {
+            try {
+                await IndexedDBCache.putAll(newEntries);
+                console.log(`[FirebaseStorageService] Cached ${newEntries.length} new entries to IndexedDB`);
+            } catch (err) {
+                console.warn("[FirebaseStorageService] Failed to save new entries to IndexedDB cache:", err);
+            }
+
+            const mergedMap = new Map<string, DiaryEntry>();
+            cachedEntries.forEach(e => mergedMap.set(e.id, e));
+            newEntries.forEach(e => mergedMap.set(e.id, e));
+            
+            const mergedList = Array.from(mergedMap.values());
+            mergedList.sort((a, b) => b.timestamp - a.timestamp);
+            return mergedList;
+        }
+        
+        return cachedEntries;
     }
 
-    static async getSimilarEntries(queryText: string, apiKey: string, limitCount = 3): Promise<DiaryEntry[]> {
+    static async getSimilarEntries(queryText: string, apiKey: string, limitCount = 3, existingEntries?: DiaryEntry[]): Promise<DiaryEntry[]> {
         let queryEmbedding: number[];
         try {
             const { generateTextEmbedding } = await import('./ai');
@@ -214,8 +357,8 @@ export class FirebaseStorageService {
             return [];
         }
         
-        // Load all entries since Web SDK does not support findNearest natively
-        const allEntries = await this.loadAllEntries();
+        // Use in-memory entries if provided, otherwise fallback to loading from cache/server
+        const allEntries = existingEntries || await this.loadAllEntries();
         
         // Helper for cosine similarity
         const cosineSimilarity = (vecA: number[], vecB: number[]) => {
