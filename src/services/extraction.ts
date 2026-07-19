@@ -102,6 +102,8 @@ export function buildGraphContext(graph?: { nodes: any[]; edges: any[] }): strin
     text += "Entities:\n";
     graph.nodes.forEach(n => {
         text += `- ${n.id} (${n.type || 'Other'}, evidence strength: ${(n.evidence_strength || 1).toFixed(2)})\n`;
+        if (n.essence) text += `  * Essence: ${n.essence}\n`;
+        if (n.core_conflict) text += `  * Core Conflict: ${n.core_conflict}\n`;
     });
     
     // List relations
@@ -151,8 +153,8 @@ export async function processAudioSession(audioBlob: Blob, apiKey: string, curre
     ],
     "quotes": [
       {
-        "text": "The exact quote text. Extract this if the user mentions a quote, cites a source/book, or uses the word 'ציטוט' (e.g. 'הנה ציטוט...', 'אני רוצה לצטט...').",
-        "source": "The source/author/origin of the quote if mentioned (e.g. 'אלברט איינשטיין', 'בודהה', 'הספר שקראתי'), or null if not mentioned.",
+        "text": "The exact quote text. Extract this if the user mentions a quote, cites a source/book, uses the word 'ציטוט' (e.g., 'הנה ציטוט...', 'אני רוצה לצטט...'), or mentions a saying/statement in quotation marks or spoken as a direct quote.",
+        "source": "The source/author/origin of the quote if mentioned (e.g., 'אלברט איינשטיין', 'בודהה', 'הספר שקראתי'), or null if not mentioned.",
         "contexts": ["Array of related themes/topics for the quote in Hebrew."]
       }
     ]
@@ -233,8 +235,8 @@ export async function processTextSession(textData: string, apiKey: string, curre
     ],
     "quotes": [
       {
-        "text": "The exact quote text. Extract this if the text contains a quote (either explicitly using the word 'ציטוט', citing a source/book, or containing text in quotation marks).",
-        "source": "The source/author/origin of the quote if mentioned (e.g. 'אלברט איינשטיין', 'שייקספיר', 'הספר שקראתי'), or null if not mentioned.",
+        "text": "The exact quote text. Extract this if the text contains a quote (either explicitly using the word 'ציטוט', citing a source/book, containing text in quotation marks, or when direct speech/wise saying is written).",
+        "source": "The source/author/origin of the quote if mentioned (e.g., 'אלברט איינשטיין', 'שייקספיר', 'הספר שקראתי'), or null if not mentioned.",
         "contexts": ["Array of related themes/topics for the quote in Hebrew."]
       }
     ]

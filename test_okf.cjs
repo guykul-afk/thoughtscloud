@@ -207,6 +207,11 @@ function convertToOKF(dataJsonPath) {
                 weight: Number(node.val ? node.val.toFixed(2) : 1)
             };
 
+            const optionalFields = ['essence', 'emotional_resonance', 'aliases', 'evolution_status', 'core_conflict', 'blind_spots', 'actionable_anchor', 'domain'];
+            optionalFields.forEach(f => {
+                if (node[f]) frontmatter[f] = node[f];
+            });
+
             let content = `${jsonToYamlFrontmatter(frontmatter)}\n# ${node.label}\n\n`;
             if (links.length > 0) {
                 content += `## Relations\n${links.join('\n')}\n`;

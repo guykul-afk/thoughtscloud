@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { ProcessedSession, OKFTriple } from './services/ai';
 import { FirebaseStorageService } from './services/FirebaseStorageService';
 import { cleanEntityName, isStopwordOrInvalid } from './utils/entityResolution';
+import { parseQuotesFromTranscript } from './utils/quotes';
 
 if (typeof window !== 'undefined') {
     (window as any).FirebaseStorageService = FirebaseStorageService;
@@ -51,6 +52,15 @@ export interface GraphNode {
     evidence_strength?: number;
     status?: 'pending' | 'succeeded' | 'failed';
     evaluation?: string;
+    // Semantic fields for enriched retrieval
+    essence?: string;
+    emotional_resonance?: string[];
+    aliases?: string[];
+    evolution_status?: string;
+    core_conflict?: string;
+    blind_spots?: string[];
+    actionable_anchor?: string;
+    domain?: string;
 }
 
 export interface GraphEdge {
@@ -393,6 +403,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
                 id: entryId,
                 timestamp,
                 ...entry,
+                quotes: (entry.quotes && entry.quotes.length > 0)
+                    ? entry.quotes
+                    : parseQuotesFromTranscript(entry.transcript),
                 openThreads: [] // initialize empty since threads are now global
             };
 
@@ -447,7 +460,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
                         finalTopics = merged;
                     }
                     
-                    updatedEntry = { ...e, transcript, topics: finalTopics };
+                    updatedEntry = { 
+                        ...e, 
+                        transcript, 
+                        topics: finalTopics,
+                        quotes: parseQuotesFromTranscript(transcript)
+                    };
                     return updatedEntry;
                 }
                 return e;
@@ -625,7 +643,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
                     topics: processed.topics || entry.topics,
                     insights: processed.insights || entry.insights,
                     mood: processed.mood || entry.mood,
-                    quotes: processed.quotes || entry.quotes || []
+                    quotes: (processed.quotes && processed.quotes.length > 0)
+                        ? processed.quotes
+                        : (entry.quotes && entry.quotes.length > 0)
+                            ? entry.quotes
+                            : parseQuotesFromTranscript(entry.transcript)
                 };
                 updatedEntries.push(updatedEntry);
 

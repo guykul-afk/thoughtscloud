@@ -71,6 +71,10 @@ export async function getHybridContext(
       const node = graph.nodes.find(n => n.id === nodeId);
       if (node) {
         contextText += `- ישות: ${node.id} (סוג: ${node.type || 'Other'}, עוצמת ראיות: ${(node.evidence_strength || 1).toFixed(2)})\n`;
+        if (node.essence) contextText += `  * מהות: ${node.essence}\n`;
+        if (node.core_conflict) contextText += `  * קונפליקט מרכזי: ${node.core_conflict}\n`;
+        if (node.actionable_anchor) contextText += `  * עוגן פעולה: ${node.actionable_anchor}\n`;
+        if (node.blind_spots && node.blind_spots.length) contextText += `  * נקודות עיוורון: ${node.blind_spots.join(', ')}\n`;
       }
     });
     contextText += relationsText.slice(0, 15).join('\n') + '\n';

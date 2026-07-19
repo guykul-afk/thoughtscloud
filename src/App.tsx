@@ -27,6 +27,7 @@ import DashboardTab from './components/DashboardTab';
 import HomeTab from './components/HomeTab';
 import InsightsTab from './components/InsightsTab';
 import HistoryTab from './components/HistoryTab';
+import { parseQuotesFromTranscript } from './utils/quotes';
 
 const forceCheckAuth = () => { console.log('forceCheckAuth stubbed'); };
 const dumpStorage = () => { console.log('dumpStorage stubbed'); };
@@ -194,7 +195,7 @@ export default function App() {
   const extractedQuotes = useMemo(() => {
     console.log('--- Extracted Quotes Diagnostic Start ---');
     console.log('Total entries:', entries.length);
-    const result = entries.filter(entry => {
+    const filtered = entries.filter(entry => {
       const hasQuoteTopic = (entry.topics || []).some(topic => {
         if (!topic) return false;
         const clean = topic.replace(/[\u200e\u200f\s#]/g, '').toLowerCase();
@@ -210,20 +211,38 @@ export default function App() {
         /#ציטוט/.test(normalizedTranscript) || 
         /#\s*ציטוט/.test(normalizedTranscript);
 
-      const hasExplicitQuoteWord = normalizedTranscript.toLowerCase().includes('ציטוט');
+      const hasExplicitQuoteWord = normalizedTranscript.toLowerCase().includes('ציטוט') || normalizedTranscript.toLowerCase().includes('לצטט');
       const hasExtractedQuotes = !!(entry as any).quotes && (entry as any).quotes.length > 0;
+      
+      const hasQuotationMarks = /["'“‘”’״][^"'“‘”’״]{3,200}["'“‘”’״]/.test(normalizedTranscript);
+      const hasColonQuote = /(?:ציטוט|הציטוט)\s*:\s*[^\n.]{5,}/i.test(normalizedTranscript);
 
       if (hasQuoteHashtag) {
         console.log(`Matched hashtag in entry [${entry.id}]:`, entry.transcript.substring(0, 100));
       }
 
-      const matched = hasQuoteTopic || hasQuoteHashtag || hasExplicitQuoteWord || hasExtractedQuotes;
+      const matched = hasQuoteTopic || hasQuoteHashtag || hasExplicitQuoteWord || hasExtractedQuotes || hasQuotationMarks || hasColonQuote;
       console.log(`Entry [${entry.id}] date [${new Date(entry.timestamp).toLocaleDateString('he-IL')}]: matched = ${matched}, topics =`, entry.topics);
       return matched;
     });
-    console.log('Matched entries:', result.length);
+
+    const mapped = filtered.map(entry => {
+      const quotes = (entry as any).quotes || [];
+      if (quotes.length === 0) {
+        const parsed = parseQuotesFromTranscript(entry.transcript);
+        if (parsed.length > 0) {
+          return {
+            ...entry,
+            quotes: parsed
+          };
+        }
+      }
+      return entry;
+    });
+
+    console.log('Matched entries:', mapped.length);
     console.log('--- Extracted Quotes Diagnostic End ---');
-    return result;
+    return mapped;
   }, [entries]);
 
   // Advanced Insights Logic (Life Themes, Emotional GTD)

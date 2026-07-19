@@ -505,11 +505,13 @@ export default function InsightsTab({
                             </div>
                           ))
                         ) : (
-                          <div className="flex items-start gap-3">
-                            <Quote size={18} className="text-violet-500 shrink-0 opacity-40 rotate-180 mt-1" />
-                            <p className="text-sm text-[#0A3B66] leading-relaxed font-semibold italic whitespace-pre-wrap">
-                              {q.transcript}
-                            </p>
+                          <div className="border-r-4 border-violet-500 pr-3 py-1 space-y-1 text-right">
+                            <div className="flex items-start gap-3 justify-start flex-row-reverse">
+                              <Quote size={18} className="text-violet-500 shrink-0 opacity-40 rotate-180 mt-1" />
+                              <p className="text-sm text-[#0A3B66] leading-relaxed font-semibold italic whitespace-pre-wrap">
+                                {q.transcript}
+                              </p>
+                            </div>
                           </div>
                         )}
                       </div>
