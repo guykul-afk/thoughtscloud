@@ -58,29 +58,6 @@ export default function InsightsTab({
   const [editingQuoteId, setEditingQuoteId] = useState<string | null>(null);
   const [editQuoteText, setEditQuoteText] = useState('');
 
-  const handleGenerateMajor = async () => {
-    if (!apiKey) return;
-    setIsGeneratingMajor(true);
-    try {
-      const { knowledgeGraph, addTriples } = useAppStore.getState();
-      const { insights: majorList, triples } = await generateMajorInsights(entries, apiKey, majorInsights, knowledgeGraph);
-      setMajorInsights(majorList);
-      if (triples && triples.length > 0) {
-        addTriples(triples, Date.now());
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsGeneratingMajor(false);
-    }
-  };
-
-  useEffect(() => {
-    if (majorInsights.length === 0 && entries.length > 0 && apiKey) {
-      handleGenerateMajor();
-    }
-  }, [entries.length, apiKey]);
-
   // Stop speech if navigating away
   useEffect(() => {
     return () => {

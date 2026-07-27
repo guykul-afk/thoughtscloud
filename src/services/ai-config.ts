@@ -10,15 +10,16 @@ export const getGenAI = (apiKey: string) => {
 };
 
 export const SUPPORTED_MODELS = [
-    { name: 'gemini-2.0-flash-exp', version: 'v1beta' },
-    { name: 'gemini-2.0-flash-001', version: 'v1beta' },
-    { name: 'gemini-1.5-flash-latest', version: 'v1beta' },
-    { name: 'gemini-1.5-pro-latest', version: 'v1beta' }
+    { name: 'gemini-3.6-flash', version: 'v1beta' },
+    { name: 'gemini-3.5-flash', version: 'v1beta' },
+    { name: 'gemini-2.5-flash', version: 'v1beta' },
+    { name: 'gemini-2.5-pro', version: 'v1beta' },
+    { name: 'gemini-2.0-flash-001', version: 'v1beta' }
 ];
 
-export let activeModelName = 'gemini-2.0-flash-exp';
+export let activeModelName = 'gemini-3.6-flash';
 export let activeApiVersion = 'v1beta';
-export let liteModelName = 'gemini-2.0-flash-exp';
+export let liteModelName = 'gemini-3.6-flash';
 
 export const setActiveModel = (name: string, version: string = 'v1beta') => {
     activeModelName = name;
@@ -35,15 +36,13 @@ export async function autoDiscoverModel(apiKey: string): Promise<{name: string, 
         const modelNames = models.map((m: any) => m.name.replace('models/', ''));
         
         const priorityList = [
+            'gemini-3.6-flash',
+            'gemini-3.5-flash',
+            'gemini-3.1-flash-lite',
             'gemini-3.0-flash',
             'gemini-2.5-flash',
-            'gemini-2.0-flash',
-            'gemini-2.0-flash-001',
-            'gemini-2.0-flash-exp',
-            'gemini-1.5-flash',
-            'gemini-1.5-flash-latest',
-            'gemini-1.5-pro-latest',
-            'gemini-1.5-pro'
+            'gemini-2.5-pro',
+            'gemini-2.0-flash-001'
         ];
 
         for (const preferred of priorityList) {

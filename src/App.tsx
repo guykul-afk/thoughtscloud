@@ -147,51 +147,7 @@ export default function App() {
     loadInitialState();
   }, []);
 
-  // Generate Weekly Insight when entries change
-  useEffect(() => {
-    if (!apiKey || entries.length === 0) return;
-
-    const timeoutId = setTimeout(async () => {
-      const { weeklyInsight, setWeeklyInsight } = useAppStore.getState();
-      try {
-        const { knowledgeGraph, addTriples } = useAppStore.getState();
-        const result = await generateWeeklyBriefing(entries, apiKey, undefined, knowledgeGraph);
-        if (result.insight !== weeklyInsight) {
-          setWeeklyInsight(result.insight);
-        }
-        if (result.triples && result.triples.length > 0) {
-          addTriples(result.triples, Date.now());
-        }
-      } catch (e) {
-        console.error("Failed to generate weekly briefing", e);
-      }
-    }, 5000); // 5 sec debounce for heavy AI call
-
-    return () => clearTimeout(timeoutId);
-  }, [entries.length, apiKey]);
-
-  // Generate Categorical Insights when entries change
-  const { setCategoricalInsights } = useAppStore();
-  useEffect(() => {
-    if (!apiKey || entries.length === 0) return;
-
-    const timeoutId = setTimeout(async () => {
-      try {
-        const { knowledgeGraph, addTriples } = useAppStore.getState();
-        const result = await generateCategoricalInsights(entries, apiKey, knowledgeGraph);
-        const { work, family, personal, triples } = result;
-        setCategoricalInsights({ work, family, personal });
-        if (triples && triples.length > 0) {
-          addTriples(triples, Date.now());
-        }
-      } catch (e) {
-        console.error("Failed to generate categorical insights", e);
-      }
-    }, 6000); // Debounce
-
-    return () => clearTimeout(timeoutId);
-  }, [entries.length, apiKey]);
-
+  // App relies on server-populated insights (read-only consumer)
   const extractedQuotes = useMemo(() => {
     console.log('--- Extracted Quotes Diagnostic Start ---');
     console.log('Total entries:', entries.length);
@@ -244,161 +200,6 @@ export default function App() {
     console.log('--- Extracted Quotes Diagnostic End ---');
     return mapped;
   }, [entries]);
-
-  // Advanced Insights Logic (Life Themes, Emotional GTD)
-  const {
-    lifeThemes, setLifeThemes,
-    dailyGtd, setDailyGtd,
-    majorInsights, setMajorInsights,
-    lastMajorInsightsCount, setLastMajorInsightsCount,
-    advices, setAdvices,
-    quoteInsights, setQuoteInsights,
-    calibratePredictionsAction,
-    updateIdentityPersonaAction
-  } = useAppStore();
-
-  useEffect(() => {
-    if (!apiKey || entries.length === 0) return;
-
-    const runAdvancedAnalysis = async () => {
-      const now = new Date();
-      const todayStr = now.toLocaleDateString('en-CA'); // YYYY-MM-DD
-      const dayOfWeek = now.getDay(); // 0 is Sunday, 5 is Friday
-      const dayOfMonth = now.getDate();
-
-      // 1. Daily Emotional GTD
-      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-      const entriesToday = entries.filter(e => e.timestamp >= todayStart);
-      const entriesTodayIds = entriesToday.map(e => e.id || '');
-      
-      const dailyGtdOutdated = !dailyGtd || 
-        dailyGtd.lastDate !== todayStr ||
-        !dailyGtd.lastEntryIds ||
-        dailyGtd.lastEntryIds.length !== entriesTodayIds.length ||
-        entriesTodayIds.some(id => !dailyGtd.lastEntryIds!.includes(id));
-
-      if (dailyGtdOutdated && entriesToday.length > 0) {
-        try {
-          const { knowledgeGraph, addTriples } = useAppStore.getState();
-          const { insight, triples } = await generateEmotionalGTDInsight(entries, apiKey, knowledgeGraph);
-          setDailyGtd({ insight, lastDate: todayStr, lastEntryIds: entriesTodayIds });
-          if (triples && triples.length > 0) {
-            addTriples(triples, Date.now());
-          }
-        } catch (e) {
-          console.error("Daily GTD error:", e);
-        }
-      }
-
-      // 2. Weekly Life Themes (Friday)
-      if (dayOfWeek === 1 && lifeThemes?.lastWeeklyDate !== todayStr) {
-        try {
-          const { knowledgeGraph, addTriples } = useAppStore.getState();
-          const { insight: themes, triples: themesTriples } = await generateLifeThemesAnalysis(entries, apiKey, 'weekly', knowledgeGraph);
-          setLifeThemes({ ...lifeThemes, weekly: themes, lastWeeklyDate: todayStr });
-          if (themesTriples && themesTriples.length > 0) {
-            addTriples(themesTriples, Date.now());
-          }
-        } catch (e) {
-          console.error("Weekly analysis error:", e);
-        }
-      }
-
-      // 3. Monthly Life Themes (1st of month)
-      if (dayOfMonth === 1 && lifeThemes?.lastMonthlyDate !== todayStr) {
-        try {
-          const { knowledgeGraph, addTriples } = useAppStore.getState();
-          const { insight: themes, triples: themesTriples } = await generateLifeThemesAnalysis(entries, apiKey, 'monthly', knowledgeGraph);
-          setLifeThemes({ ...lifeThemes, monthly: themes, lastMonthlyDate: todayStr });
-          if (themesTriples && themesTriples.length > 0) {
-            addTriples(themesTriples, Date.now());
-          }
-        } catch (e) {
-          console.error("Monthly analysis error:", e);
-        }
-      }
-
-      // 5. Major Insights (Triggered if new entries exist since last analysis)
-      if (entries.length > 0 && entries.length !== lastMajorInsightsCount) {
-          try {
-            const { knowledgeGraph, addTriples } = useAppStore.getState();
-            const { insights: majorList, triples } = await generateMajorInsights(entries, apiKey, majorInsights, knowledgeGraph);
-            setMajorInsights(majorList);
-            if (triples && triples.length > 0) {
-              addTriples(triples, Date.now());
-            }
-            setLastMajorInsightsCount(entries.length);
-          } catch (e) {
-            console.error("Major Insights error:", e);
-          }
-      }
-
-      // 6. Advices Generator (Triggered if 5 new entries since last generation)
-      const currentEntryCount = entries.length;
-      const lastAdvicesCount = advices?.lastEntryCount || 0;
-      if (currentEntryCount - lastAdvicesCount >= 5 && currentEntryCount > 0) {
-        try {
-          const { knowledgeGraph, addTriples } = useAppStore.getState();
-          const { work, family, mental, triples } = await generateAdvices(entries, apiKey, knowledgeGraph);
-          if (triples && triples.length > 0) {
-            addTriples(triples, Date.now());
-          }
-          const history = advices?.history || [];
-          setAdvices({
-            lastEntryCount: currentEntryCount,
-            history: [{
-              timestamp: Date.now(),
-              work,
-              family,
-              mental
-            }, ...history]
-          });
-        } catch (e) {
-          console.error("Failed to generate advices:", e);
-        }
-      }
-      // 7. Quote Insights (Triggered once every 2 days if quotes exist and initial ones were loaded)
-      const lastQuoteUpdate = quoteInsights?.lastUpdateDate ? new Date(quoteInsights.lastUpdateDate) : null;
-      const todayDate = new Date();
-      const diffDays = lastQuoteUpdate ? (todayDate.getTime() - lastQuoteUpdate.getTime()) / (1000 * 3600 * 24) : Infinity;
-
-      if (quoteInsights?.lastUpdateDate && diffDays >= 2 && extractedQuotes.length > 0) {
-        try {
-          const { knowledgeGraph, addTriples } = useAppStore.getState();
-          const existing = quoteInsights?.insights || [];
-          const { insight: newInsight, triples } = await generateQuoteInsight(extractedQuotes, existing, apiKey, knowledgeGraph);
-          
-          if (triples && triples.length > 0) {
-            addTriples(triples, Date.now());
-          }
-          
-          setQuoteInsights({
-            insights: [newInsight, ...existing],
-            lastUpdateDate: todayStr
-          });
-        } catch (e) {
-          console.error("Failed to generate quote insight:", e);
-        }
-      }
-
-      // 8. Calibrate Predictions
-      try {
-        await calibratePredictionsAction();
-      } catch (e) {
-        console.error("Failed to run prediction calibration:", e);
-      }
-
-      // 9. Update Identity Persona
-      try {
-        await updateIdentityPersonaAction();
-      } catch (e) {
-        console.error("Failed to update identity persona:", e);
-      }
-    };
-
-    const timeoutId = setTimeout(runAdvancedAnalysis, 10000);
-    return () => clearTimeout(timeoutId);
-  }, [entries.length, apiKey, dailyGtd?.lastDate, dailyGtd?.lastEntryIds?.join(','), lifeThemes?.lastWeeklyDate, lifeThemes?.lastMonthlyDate, advices?.lastEntryCount, quoteInsights?.lastUpdateDate, extractedQuotes.length, lastMajorInsightsCount, calibratePredictionsAction, updateIdentityPersonaAction]);
 
   const handleTestKey = async (keyToTest: string) => {
     if (!keyToTest) return;
@@ -888,7 +689,7 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
                 </button>
               </div>
               <p className="text-sm text-gray-500 mb-4">
-                כדי להשתמש בבינה מלאכותית, אנא הכנס מפתח API של <span className="font-bold text-[#0A3B66]">Gemini 2.0 Flash</span>.
+                כדי להשתמש בבינה מלאכותית, אנא הכנס מפתח API של <span className="font-bold text-[#0A3B66]">Gemini 3.6 Flash / 3.5 Flash</span>.
               </p>
 
               <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 mb-4">

@@ -123,15 +123,16 @@ export async function processAudioSession(audioBlob: Blob, apiKey: string, curre
     }, { apiVersion: activeApiVersion as any });
 
     const base64Audio = await blobToBase64(audioBlob);
+    const cleanMimeType = (audioBlob.type || 'audio/webm').split(';')[0];
 
     const prompt = `
   You are an expert personal assistant and psychological profiler.
   You are assisting "גיא" (Guy).
   I am providing you with an audio recording of Guy's personal diary entry.
   
-  Please analyze the audio and provide exactly the following in clear, valid JSON format (do not include markdown code block syntax around the JSON):
+  Please analyze the audio carefully and provide exactly the following in clear, valid JSON format:
   {
-    "transcript": "The full exact transcript. MUST BE IN HEBREW. If the audio is silent, output 'NO_SPEECH_DETECTED'. Do NOT hallucinate.",
+    "transcript": "High-precision full verbatim transcription of the spoken Hebrew audio. Extract every spoken word and sentence accurately. Output 'NO_SPEECH_DETECTED' ONLY if the recording contains complete silence or zero spoken words. Do NOT hallucinate.",
     "openThreads": ["Array of unresolved thoughts/dilemmas. Phrase as Hebrew questions.", ...],
     "insights": ["Array of psychological insights. Hebrew.", ...],
     "topics": ["Array of tags/categories. Hebrew.", ...],
@@ -179,7 +180,7 @@ export async function processAudioSession(audioBlob: Blob, apiKey: string, curre
             {
                 inlineData: {
                     data: base64Audio,
-                    mimeType: audioBlob.type || 'audio/webm',
+                    mimeType: cleanMimeType,
                 }
             },
             {

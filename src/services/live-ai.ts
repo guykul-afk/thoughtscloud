@@ -19,13 +19,11 @@ export interface LiveChatOptions {
 
 // Fixed prioritized list of models for bidiGenerateContent
 const LIVE_MODEL_CANDIDATES = [
-    'gemini-3.1-flash-live-preview',     // Current recommended model (2025)
-    'gemini-2.5-flash-preview-native-audio-12-2025', // Another recent model
-    'gemini-2.5-flash-native-audio-preview-12-2025', // Variant naming
-    'gemini-live-2.5-flash-preview',     // Preview name variant
-    'gemini-2.0-flash-live-001',        // GA version
-    'gemini-2.0-flash-exp',              // Experimental
-    'gemini-2.0-flash',                  // Generic
+    'gemini-3.6-flash',
+    'gemini-3.5-flash',
+    'gemini-3.1-flash-live-preview',
+    'gemini-2.5-flash',
+    'gemini-2.0-flash-001'
 ];
 
 export class GeminiLiveService {
