@@ -14,11 +14,9 @@ import {
   Home, 
   Heart, 
   Pencil, 
-  Quote, 
-  Activity 
+  Quote
 } from 'lucide-react';
 import { useAppStore, type DiaryEntry } from '../store';
-import { generateMajorInsights } from '../services/ai';
 import SpeechButton from './SpeechButton';
 import { cn } from '../App';
 
@@ -42,14 +40,13 @@ export default function InsightsTab({
   extractedQuotes
 }: InsightsTabProps) {
   const { 
-    majorInsights, setMajorInsights,
-    chatMessages, apiKey, entries,
+    majorInsights,
+    chatMessages, entries,
     dailyGtd, quoteInsights, advices,
     updateEntry, removeEntry
   } = useAppStore();
   const [showMajorInsights, setShowMajorInsights] = useState(false);
   const [showAllTimeInsights, setShowAllTimeInsights] = useState(false);
-  const [isGeneratingMajor, setIsGeneratingMajor] = useState(false);
   const [isChatExpanded, setIsChatExpanded] = useState(false);
   const [isAdvicesExpanded, setIsAdvicesExpanded] = useState(false);
   const [isQuotesExpanded, setIsQuotesExpanded] = useState(false);
@@ -240,16 +237,6 @@ export default function InsightsTab({
             </div>
           </div>
           <div className="flex items-center gap-3">
-             {isGeneratingMajor ? (
-               <Loader2 size={20} className="animate-spin text-[#0A3B66]" />
-             ) : (
-               <button 
-                 onClick={(e) => { e.stopPropagation(); handleGenerateMajor(); }}
-                 className="p-2 text-[#0A3B66]/40 hover:text-[#FFC107] transition-colors"
-               >
-                 <Activity size={18} />
-               </button>
-             )}
             <div className="text-[#0A3B66]/30">
               {showMajorInsights ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
             </div>

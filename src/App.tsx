@@ -10,13 +10,6 @@ import { twMerge } from 'tailwind-merge';
 import { useAppStore } from './store';
 import {
   queryInsights,
-  generateWeeklyBriefing,
-  generateCategoricalInsights,
-  generateLifeThemesAnalysis,
-  generateEmotionalGTDInsight,
-  generateMajorInsights,
-  generateAdvices,
-  generateQuoteInsight,
   processTextSession,
   SUPPORTED_MODELS,
   setActiveModel,
