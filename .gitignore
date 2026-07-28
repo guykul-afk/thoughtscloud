@@ -8,3 +8,4 @@ dist
 dist-ssr
 *.log
 backups_safety/
+scratch/
