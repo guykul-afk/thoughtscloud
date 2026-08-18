@@ -85,6 +85,21 @@ class IndexedDBCache {
             return Promise.resolve();
         });
     }
+
+    static clear(): Promise<void> {
+        return this.open().then((db) => {
+            return new Promise<void>((resolve, reject) => {
+                const tx = db.transaction(this.storeName, 'readwrite');
+                const store = tx.objectStore(this.storeName);
+                store.clear();
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }).catch((err) => {
+            console.warn("[IndexedDBCache] clear failed:", err);
+            return Promise.resolve();
+        });
+    }
 }
 
 export class FirebaseStorageService {
@@ -93,32 +108,17 @@ export class FirebaseStorageService {
 
     static init() {
         if (!this.authPromise) {
-            const localUid = localStorage.getItem('firebase_sync_uid');
-            if (localUid) {
-                this.uid = localUid;
-                this.authPromise = Promise.resolve(localUid);
-                return this.authPromise;
+            let localUid = localStorage.getItem('firebase_sync_uid');
+            if (!localUid) {
+                localUid = 'K9j4Nx0WK7NKYJs6iDUz35LXFai1';
+                localStorage.setItem('firebase_sync_uid', localUid);
             }
-
-            this.authPromise = new Promise((resolve, reject) => {
-                onAuthStateChanged(auth, (user) => {
-                    if (user) {
-                        this.uid = user.uid;
-                        localStorage.setItem('firebase_sync_uid', user.uid);
-                        resolve(user.uid);
-                    } else {
-                        signInAnonymously(auth)
-                            .then((userCredential) => {
-                                this.uid = userCredential.user.uid;
-                                localStorage.setItem('firebase_sync_uid', userCredential.user.uid);
-                                resolve(userCredential.user.uid);
-                            })
-                            .catch((error) => {
-                                console.error("Firebase Auth Error:", error);
-                                reject(error);
-                            });
-                    }
-                });
+            this.uid = localUid;
+            this.authPromise = Promise.resolve(localUid);
+            
+            // Perform background anonymous sign in to ensure session is authenticated
+            signInAnonymously(auth).catch(err => {
+                console.warn("[FirebaseStorageService] Background anonymous auth failed:", err);
             });
         }
         return this.authPromise;
@@ -151,51 +151,10 @@ export class FirebaseStorageService {
         const docId = `${date}_${entry.id}`;
         const docRef = doc(db, `users/${uid}/entries`, docId);
         
-        let embeddingArray = entry.embedding;
-        if (!embeddingArray && apiKey) {
-            try {
-                const { generateTextEmbedding } = await import('./ai');
-                embeddingArray = await generateTextEmbedding(entry.transcript, apiKey);
-            } catch (e) {
-                console.error("Failed to generate embedding for entry:", e);
-            }
-        }
-        
-        // Native OKFTriple representation is already an array of flat objects, which Firestore supports!
         const firestoreEntry: any = {
             ...entry,
-            triples: entry.triples ? entry.triples.map((t: any) => {
-                if (Array.isArray(t)) {
-                    return { 
-                        subject: t[0] || '', 
-                        relation: t[1] || '', 
-                        object: t[2] || '',
-                        domain: 'General',
-                        temporalContext: 'Present',
-                        confidence: 'Fact',
-                        sentiment: 0,
-                        subjectType: 'Other',
-                        objectType: 'Other'
-                    };
-                }
-                return {
-                    subject: t.subject || t.s || '',
-                    relation: t.relation || t.r || '',
-                    object: t.object || t.o || '',
-                    domain: t.domain || 'General',
-                    temporalContext: t.temporalContext || 'Present',
-                    confidence: t.confidence || 'Fact',
-                    sentiment: typeof t.sentiment === 'number' ? t.sentiment : 0,
-                    subjectType: t.subjectType || 'Other',
-                    objectType: t.objectType || 'Other'
-                };
-            }) : []
+            triples: entry.triples || []
         };
-        
-        if (embeddingArray) {
-            firestoreEntry.embedding = embeddingArray;
-            entry.embedding = embeddingArray; // update the local object too
-        }
         
         await setDoc(docRef, firestoreEntry);
 
@@ -226,30 +185,14 @@ export class FirebaseStorageService {
     }
 
     static async saveKnowledgeGraph(graph: KnowledgeGraph): Promise<void> {
-        const uid = await this.getUid();
-        
-        // Save each node as a document
-        for (const node of graph.nodes) {
-            const safeDocId = node.id.replace(/\//g, '%2F');
-            const docRef = doc(db, `users/${uid}/entities`, safeDocId);
-            // Find edges related to this node
-            const relatedEdges = graph.edges.filter(e => e.source === node.id || e.target === node.id);
-            
-            await setDoc(docRef, {
-                ...node,
-                relatedEdges
-            });
-        }
+        // Handled by server
     }
 
     static async saveInsights(insights: any): Promise<void> {
-        const uid = await this.getUid();
-        const docRef = doc(db, `users/${uid}/insights`, 'current');
-        
-        await setDoc(docRef, insights, { merge: true });
+        // Handled by server
     }
 
-    static async loadAllEntries(): Promise<DiaryEntry[]> {
+    static async loadAllEntries(forceFull = false): Promise<DiaryEntry[]> {
         const uid = await this.getUid();
         
         // 1. Try to load cached entries from IndexedDB
@@ -260,23 +203,83 @@ export class FirebaseStorageService {
         } catch (err) {
             console.warn("[FirebaseStorageService] Failed to load entries from IndexedDB cache:", err);
         }
+ 
+        const entriesRef = collection(db, `users/${uid}/entries`);
+        
+        if (forceFull) {
+            console.log("[FirebaseStorageService] Performing full sync from server...");
+            const q = query(entriesRef, orderBy('timestamp', 'desc'));
+            try {
+                const querySnapshot = await getDocsFromServer(q);
+                console.log(`[FirebaseStorageService] Successfully fetched all ${querySnapshot.size} entries from server.`);
+                
+                const serverEntries: DiaryEntry[] = [];
+                querySnapshot.forEach((doc) => {
+                    const data = doc.data();
+                    if (data.triples) {
+                        data.triples = data.triples.map((t: any) => {
+                            if (Array.isArray(t)) {
+                                return { 
+                                    subject: t[0] || '', 
+                                    relation: t[1] || '', 
+                                    object: t[2] || '',
+                                    domain: 'General',
+                                    temporalContext: 'Present',
+                                    confidence: 'Fact',
+                                    sentiment: 0,
+                                    subjectType: 'Other',
+                                    objectType: 'Other'
+                                };
+                            }
+                            return {
+                                subject: t.subject || t.s || '',
+                                relation: t.relation || t.r || '',
+                                object: t.object || t.o || '',
+                                domain: t.domain || 'General',
+                                temporalContext: t.temporalContext || 'Present',
+                                confidence: t.confidence || 'Fact',
+                                sentiment: typeof t.sentiment === 'number' ? t.sentiment : 0,
+                                subjectType: t.subjectType || 'Other',
+                                objectType: t.objectType || 'Other'
+                            };
+                        });
+                    }
+                    if (data.embedding) {
+                        data.embedding = Array.isArray(data.embedding) ? data.embedding : data.embedding.toArray ? data.embedding.toArray() : null;
+                    }
+                    serverEntries.push(data as DiaryEntry);
+                });
 
-        // 2. Find the latest timestamp from cached entries to use for delta sync
+                // Clear cache and save all to cache
+                try {
+                    await IndexedDBCache.clear();
+                    await IndexedDBCache.putAll(serverEntries);
+                    console.log(`[FirebaseStorageService] Overwrote local cache with ${serverEntries.length} server entries.`);
+                } catch (err) {
+                    console.warn("[FirebaseStorageService] Failed to update local cache during full sync:", err);
+                }
+
+                return serverEntries;
+            } catch (err) {
+                console.warn("[FirebaseStorageService] Full sync from server failed, falling back to local cache:", err);
+                return cachedEntries;
+            }
+        }
+
+        // Otherwise, do delta sync:
         let lastTimestamp = 0;
         if (cachedEntries.length > 0) {
-            // Sort to find the latest
             cachedEntries.sort((a, b) => b.timestamp - a.timestamp);
             lastTimestamp = cachedEntries[0].timestamp;
         }
 
-        const entriesRef = collection(db, `users/${uid}/entries`);
         let q;
         if (lastTimestamp > 0) {
             q = query(entriesRef, where('timestamp', '>', lastTimestamp), orderBy('timestamp', 'desc'));
             console.log(`[FirebaseStorageService] Fetching delta updates since ${new Date(lastTimestamp).toISOString()}`);
         } else {
             q = query(entriesRef, orderBy('timestamp', 'desc'));
-            console.log("[FirebaseStorageService] No cache found. Fetching all entries from server");
+            console.log("[FirebaseStorageService] Fetching all entries from server");
         }
         
         let querySnapshot;
@@ -292,7 +295,6 @@ export class FirebaseStorageService {
         querySnapshot.forEach((doc) => {
             const data = doc.data();
             if (data.triples) {
-                // Convert any legacy representations to OKFTriple format
                 data.triples = data.triples.map((t: any) => {
                     if (Array.isArray(t)) {
                         return { 
@@ -326,7 +328,6 @@ export class FirebaseStorageService {
             newEntries.push(data as DiaryEntry);
         });
 
-        // 3. Save new entries to IndexedDB and merge with cache
         if (newEntries.length > 0) {
             try {
                 await IndexedDBCache.putAll(newEntries);
@@ -387,57 +388,11 @@ export class FirebaseStorageService {
     }
 
     static async loadKnowledgeGraph(): Promise<KnowledgeGraph> {
-        const uid = await this.getUid();
-        const nodesRef = collection(db, `users/${uid}/entities`);
-        
-        let querySnapshot;
-        try {
-            querySnapshot = await getDocsFromServer(nodesRef);
-            console.log("[FirebaseStorageService] Loaded knowledge graph from server successfully");
-        } catch (err) {
-            console.warn("[FirebaseStorageService] Failed to load knowledge graph from server, falling back to cache:", err);
-            querySnapshot = await getDocs(nodesRef);
-        }
-        
-        const nodes: any[] = [];
-        const edges: any[] = [];
-        const edgeIds = new Set<string>();
-
-        querySnapshot.forEach((doc) => {
-            const data = doc.data();
-            nodes.push({ id: data.id, label: data.label, val: data.val });
-            
-            if (data.relatedEdges) {
-                data.relatedEdges.forEach((edge: any) => {
-                    const edgeId = `${edge.source}-${edge.target}-${edge.relation}`;
-                    if (!edgeIds.has(edgeId)) {
-                        edgeIds.add(edgeId);
-                        edges.push(edge);
-                    }
-                });
-            }
-        });
-
-        return { nodes, edges };
+        return { nodes: [], edges: [] }; // The mobile app doesn't need to load the graph anymore.
     }
 
     static async loadInsights(): Promise<any> {
-        const uid = await this.getUid();
-        const docRef = doc(db, `users/${uid}/insights`, 'current');
-        
-        let docSnap;
-        try {
-            docSnap = await getDocFromServer(docRef);
-            console.log("[FirebaseStorageService] Loaded insights from server successfully");
-        } catch (err) {
-            console.warn("[FirebaseStorageService] Failed to load insights from server, falling back to cache:", err);
-            docSnap = await getDoc(docRef);
-        }
-        
-        if (docSnap.exists()) {
-            return docSnap.data();
-        }
-        return {};
+        return {}; // The mobile app doesn't need to load insights anymore.
     }
 
     static async saveEpisodicSummary(period: string, summary: any): Promise<void> {

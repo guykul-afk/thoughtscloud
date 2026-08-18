@@ -4,7 +4,7 @@ import { useAppStore } from '../store';
 import SpeechButton from './SpeechButton';
 
 export default function HistoryTab() {
-  const { entries, removeEntry, updateEntry } = useAppStore();
+  const { entries, removeEntry, updateEntry, loadInitialState, syncStatus } = useAppStore();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
   const [editTopics, setEditTopics] = useState<string[]>([]);
@@ -19,6 +19,13 @@ export default function HistoryTab() {
           </div>
           יומן מחשבות
         </h2>
+        <button
+          onClick={() => loadInitialState(true)}
+          disabled={syncStatus === 'saving'}
+          className="bg-white/10 hover:bg-white/20 disabled:opacity-50 text-white border border-white/15 px-3.5 py-2 rounded-2xl text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+        >
+          {syncStatus === 'saving' ? 'מסתנכרן...' : 'משוך את כל הרשומות 🔄'}
+        </button>
       </div>
 
       {entries.length === 0 ? (

@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import { Notebook, Mic, Square, X, Send, Loader2 } from 'lucide-react';
 import { useAppStore } from '../store';
-import { processAudioSession, processTextSession } from '../services/ai';
+import { processAudioSession, processTextSession, generateClarifyingQuestion } from '../services/ai';
 import type { LiveChatStatus } from '../services/live-ai';
 import VoicePulse from './VoicePulse';
 import { cn } from '../App';
@@ -22,6 +22,9 @@ export default function HomeTab({
   const [textInput, setTextInput] = useState('');
   const [isProcessingText, setIsProcessingText] = useState(false);
   const [isProcessingAudio, setIsProcessingAudio] = useState(false);
+  const [sessionTranscript, setSessionTranscript] = useState('');
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
+  const [questionCount, setQuestionCount] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const { apiKey, addEntry, entries } = useAppStore();
@@ -87,9 +90,34 @@ export default function HomeTab({
           const result = await processAudioSession(audioBlob, apiKey, currentOpenThreads);
           if (result.transcript === 'NO_SPEECH_DETECTED') {
             alert("לא זוהה דיבור ברור בהקלטה, הרשומה בוטלה ולא נשמרה ביומן.");
-          } else {
-            addEntry(result);
+            setIsProcessingAudio(false);
+            return;
           }
+          
+          // Append current user transcript
+          const updatedTranscript = sessionTranscript ? `${sessionTranscript}\nמשתמש: ${result.transcript}` : `משתמש: ${result.transcript}`;
+          
+          // If we haven't reached the 2 question limit, ask AI for a question
+          if (questionCount < 2) {
+            const question = await generateClarifyingQuestion(updatedTranscript, apiKey);
+            if (question && question !== "DONE") {
+              setSessionTranscript(`${updatedTranscript}\nענן המחשבות: ${question}`);
+              setPendingQuestion(question);
+              setQuestionCount(prev => prev + 1);
+              setIsProcessingAudio(false);
+              return; // Wait for user's next recording
+            }
+          }
+          
+          // AI finished or we reached the limit - save the final conversation
+          const finalResult = await processTextSession(updatedTranscript, apiKey, currentOpenThreads);
+          addEntry(finalResult);
+          
+          // Reset states
+          setSessionTranscript('');
+          setPendingQuestion(null);
+          setQuestionCount(0);
+          
         } catch (e: any) {
           console.error("Recording process error:", e);
           alert("שגיאה בתמלול וניתוח ההקלטה (" + e.name + "): " + (e.message || JSON.stringify(e)));
@@ -177,15 +205,55 @@ export default function HomeTab({
 
   return (
     <div className="flex flex-col items-center justify-start text-center w-full h-full pt-10 pb-[100px] space-y-12">
-      <div className="relative w-64 h-64 flex items-center justify-center">
-        {/* Glow effect */}
+      <div className="relative w-64 h-64 flex items-center justify-center mt-10">
+        {/* Main Aura Effect */}
         <div className={cn(
           "absolute inset-0 bg-[#FFD54F] opacity-20 blur-[80px] rounded-full transition-all duration-1000",
           (isRecording || isLiveActive) ? "scale-150 opacity-40 animate-pulse" : "scale-100"
         )} />
+
+        {/* Pending Question UI */}
+        {pendingQuestion && !isRecording && (
+          <div className="absolute top-[-140px] w-full max-w-[320px] bg-white/10 backdrop-blur-xl rounded-2xl p-5 shadow-2xl border border-white/20 text-center animate-in fade-in slide-in-from-bottom-4 z-30">
+            <div className="text-[#FFD54F] text-sm font-bold mb-2 flex items-center justify-center gap-2">
+              <span>ענן המחשבות שואל:</span>
+            </div>
+            <p className="text-white text-lg font-medium mb-4 leading-snug drop-shadow-sm">{pendingQuestion}</p>
+            <div className="flex gap-3 justify-center">
+              <button 
+                onClick={startRecording}
+                disabled={isProcessingAudio}
+                className="flex-1 bg-gradient-to-r from-[#FFA000] to-[#FFC107] text-[#0A3B66] py-2 rounded-full font-bold shadow-md hover:brightness-110 transition-all text-sm active:scale-95"
+              >
+                הקלט תשובה
+              </button>
+              <button 
+                onClick={async () => {
+                  setIsProcessingAudio(true);
+                  setPendingQuestion(null);
+                  try {
+                    const currentOpenThreads = entries.flatMap((e: any) => (e.openThreads || []).map((t: any) => typeof t === 'string' ? t : t.text));
+                    const finalResult = await processTextSession(sessionTranscript, apiKey, currentOpenThreads);
+                    addEntry(finalResult);
+                    setSessionTranscript('');
+                    setQuestionCount(0);
+                  } catch (e: any) {
+                    alert("שגיאה בסיום: " + e.message);
+                  } finally {
+                    setIsProcessingAudio(false);
+                  }
+                }}
+                disabled={isProcessingAudio}
+                className="flex-1 bg-white/10 border border-white/20 text-white py-2 rounded-full font-bold hover:bg-white/20 transition-all text-sm active:scale-95"
+              >
+                דלג וסיים
+              </button>
+            </div>
+          </div>
+        )}
         
         {/* Right Button: Text Input (Notebook) */}
-        {!isLiveActive && !isRecording && (
+        {!isLiveActive && !isRecording && !pendingQuestion && (
           <button 
             onClick={() => setShowTextInput(!showTextInput)}
             className={cn(

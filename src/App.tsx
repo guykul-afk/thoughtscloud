@@ -16,9 +16,7 @@ import {
   autoDiscoverModel
 } from './services/ai';
 import { GeminiLiveService, type LiveChatStatus } from './services/live-ai';
-import DashboardTab from './components/DashboardTab';
 import HomeTab from './components/HomeTab';
-import InsightsTab from './components/InsightsTab';
 import HistoryTab from './components/HistoryTab';
 import { parseQuotesFromTranscript } from './utils/quotes';
 
@@ -32,8 +30,8 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'home' | 'insights' | 'dashboard' | 'history'>('home');
-  const { apiKey, setApiKey, entries, preferredModel, preferredApiVersion, setPreferredModel, loadInitialState, syncStatus, syncError, reprocessAllEntries } = useAppStore();
+  const [activeTab, setActiveTab] = useState<'home' | 'history'>('home');
+  const { apiKey, setApiKey, entries, preferredModel, preferredApiVersion, setPreferredModel, loadInitialState, syncStatus, syncError, addEntry } = useAppStore();
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [syncUid, setSyncUid] = useState('');
   const [isTestingKey, setIsTestingKey] = useState(false);
@@ -91,28 +89,7 @@ export default function App() {
     }
   }, [apiKey, preferredModel, preferredApiVersion]);
 
-  // Auto-reprocess catalog V2 (behind the scenes)
-  useEffect(() => {
-    const hasRun = localStorage.getItem('hasRunV2Reprocess_v2');
-    if (!hasRun && apiKey && entries.length > 0) {
-      console.log('Running automatic background catalog update...');
-      setIsReprocessing(true);
-      setReprocessProgress({ current: 0, total: entries.length });
-      
-      reprocessAllEntries((current, total) => {
-        setReprocessProgress({ current, total });
-      }).then(() => {
-        setIsReprocessing(false);
-        setReprocessProgress(null);
-        localStorage.setItem('hasRunV2Reprocess_v2', 'true');
-        console.log('Background catalog update completed successfully!');
-      }).catch(err => {
-        console.error('Failed to run background catalog update', err);
-        setIsReprocessing(false);
-        setReprocessProgress(null);
-      });
-    }
-  }, [apiKey, entries.length]);
+  // Background processing is now handled by the server.
 
   useEffect(() => {
     const checkStandalone = () => {
@@ -199,7 +176,7 @@ export default function App() {
     setIsTestingKey(true);
     setTestResult(null);
 
-    let lastError = "";
+    const errors: string[] = [];
     let foundWorkableModel = false;
 
     for (const model of (SUPPORTED_MODELS as any[])) {
@@ -214,16 +191,22 @@ export default function App() {
         break;
       } catch (e: any) {
         console.error(`Model ${model.name} failed:`, e);
-        lastError = e.message || "שגיאה לא ידועה";
+        const errMsg = e.message || "שגיאה לא ידועה";
+        errors.push(`${model.name}: ${errMsg}`);
+        const lowerErr = errMsg.toLowerCase();
+        if (lowerErr.includes("api key not valid") || lowerErr.includes("api_key_invalid") || lowerErr.includes("invalid api key") || lowerErr.includes("key is invalid")) {
+          errors.push("המפתח עצמו אינו תקין (API Key Invalid).");
+          break;
+        }
       }
     }
 
     if (!foundWorkableModel) {
-      let errorMsg = lastError;
-      if (errorMsg.includes("404") || errorMsg.includes("not found") || errorMsg.includes("no longer available")) {
-        errorMsg += "\n\n💡 ייתכן שחשבון הגוגל שלך חסום לבינה מלאכותית או שצריך ליצור פרויקט חדש ב-AI Studio.";
-      }
-      setTestResult({ success: false, message: `כל הניסיונות נכשלו: ${errorMsg}` });
+      const detailedErrors = errors.join("\n");
+      setTestResult({ 
+        success: false, 
+        message: `כל הניסיונות נכשלו:\n${detailedErrors}\n\n💡 ייתכן שצריך להפעיל את Generative Language API ב-Google Cloud Console, או ליצור מפתח חדש ב-AI Studio.` 
+      });
     }
 
     setIsTestingKey(false);
@@ -261,30 +244,7 @@ export default function App() {
   };
 
   const handleReprocessHistory = async () => {
-    if (!apiKey) {
-      alert("אנא הגדר מפתח API תחילה.");
-      return;
-    }
-    if (entries.length === 0) {
-      alert("אין רשומות יומן לעדכון.");
-      return;
-    }
-    const confirmReprocess = window.confirm(`האם אתה בטוח שברצונך לקטלג מחדש ${entries.length} רשומות יומן מהעבר? פעולה זו עשויה לקחת זמן ותפעיל מחדש את ה-AI על כל הרשומות.`);
-    if (!confirmReprocess) return;
-
-    setIsReprocessing(true);
-    setReprocessProgress({ current: 0, total: entries.length });
-    try {
-      await reprocessAllEntries((current, total) => {
-        setReprocessProgress({ current, total });
-      });
-      alert("קיטלוג ההיסטוריה מחדש הושלם בהצלחה!");
-    } catch (err: any) {
-      alert(`שגיאה במהלך קיטלוג מחדש: ${err.message || err}`);
-    } finally {
-      setIsReprocessing(false);
-      setReprocessProgress(null);
-    }
+    alert("קיטלוג ההיסטוריה מנוהל כעת על ידי השרת.");
   };
 
   const toggleLiveChat = async (customInstruction?: string) => {
@@ -327,13 +287,14 @@ ${weeklyInsight ? `- תובנה שבועית (כולל צד הצל): ${weeklyIns
 ${dailyGtd?.insight ? `- GTD רגשי להיום: ${dailyGtd.insight}` : ''}
 ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחרון: ${lifeThemes.weekly}` : ''}
 
-הנחיות לאימון אקטיבי:
-1. אל תהיה מנומס מדי. אם גיא מתחמק, הצף זאת.
-2. שאל שאלות שגורמות לו לעצור ולחשוב (Reflective Probing).
-3. חפש דפוסים בין העבר להווה.
-4. "תקוף" בעדינות הנחות יסוד מוטעות או אמונות מגבילות.
-5. דבר בקצרה כדי לתת לגיא מקום להגיב, אך התערב כשצריך להחזיר את השיחה לעומק.
-6. פנה למשתמש תמיד בגוף שני ("אתה") ולא בשמו.
+הנחיות לאימון אקטיבי (חוק 2 שאלות החידוד):
+1. **הגבלת שאלות חמורה:** מותר לך לשאול את גיא לכל היותר 2 שאלות חידוד במהלך שיחה זו.
+2. לאחר ששאלת 2 שאלות, או כאשר הבנת את הרציונל במלואו, **אל תשאל שאלות נוספות**. במקום זאת, סכם את התובנה בקצרה (Insight Pill) וציין שההקלטה הושלמה.
+3. אל תהיה מנומס מדי. אם גיא מתחמק, הצף זאת.
+4. שאל שאלות שגורמות לו לעצור ולחשוב (Reflective Probing).
+5. חפש דפוסים בין העבר להווה.
+6. דבר בקצרה כדי לתת לגיא מקום להגיב.
+7. פנה למשתמש תמיד בגוף שני ("אתה") ולא בשמו.
 `;
 
       setIsLiveActive(true);
@@ -389,20 +350,13 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
     setIsSending(true);
 
     try {
-      const { entries, weeklyInsight, categoricalInsights, chatMessages, addEntry, knowledgeGraph, identityPersona } = useAppStore.getState();
-      const response = await queryInsights(userMsg, entries, apiKey, {
-        weeklyInsight: weeklyInsight || undefined,
-        categoricalInsights: categoricalInsights || undefined,
-        chatHistory: chatMessages || undefined,
-        knowledgeGraph: knowledgeGraph || undefined,
-        identityPersona: identityPersona || undefined
-      });
-      addChatMessage('ai', response);
+      // AI Insights handled by server
+      addChatMessage('ai', "הודעה התקבלה ונשמרה.");
       
       addEntry({
-        transcript: `שאלה: ${userMsg}\nתשובה: ${response}`,
+        transcript: `שאלה: ${userMsg}\nתשובה נרשמה`,
         openThreads: [],
-        insights: [response],
+        insights: [],
         triples: [],
         topics: ['מענה לשאלה'],
         mood: 'ניטרלי'
@@ -646,26 +600,12 @@ ${lifeThemes?.weekly ? `- תמות חיים מרכזיות מהשבוע האחר
               handleToggleVoice={handleToggleVoice}
             />
           )}
-          {activeTab === 'insights' && (
-            <InsightsTab 
-              isLiveActive={isLiveActive} 
-              input={input}
-              setInput={setInput}
-              handleSend={handleSend}
-              isSending={isSending}
-              handleToggleVoice={handleToggleVoice}
-              extractedQuotes={extractedQuotes}
-            />
-          )}
-          {activeTab === 'dashboard' && <DashboardTab />}
           {activeTab === 'history' && <HistoryTab />}
         </main>
 
         <div className="fixed bottom-0 left-0 right-0 z-[100] flex justify-center px-6 pb-[env(safe-area-inset-bottom,24px)] pointer-events-none">
           <nav className="w-full h-20 bg-[#0D3B66]/80 backdrop-blur-3xl rounded-[2.5rem] flex justify-around items-center px-4 shadow-2xl border border-white/10 pointer-events-auto" dir="rtl">
             <NavItem id="home" label="בית" isActive={activeTab === 'home'} onClick={() => setActiveTab('home')} />
-            <NavItem id="insights" label="תובנות" isActive={activeTab === 'insights'} onClick={() => setActiveTab('insights')} />
-            <NavItem id="dashboard" label="מבט על" isActive={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
             <NavItem id="history" label="יומן" isActive={activeTab === 'history'} onClick={() => setActiveTab('history')} />
           </nav>
         </div>

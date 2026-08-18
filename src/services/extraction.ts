@@ -20,7 +20,7 @@ export interface ProcessedSession {
     topics: string[];
     mood: string;
     sentiment?: number; // Overall entry sentiment
-    narrative_signature?: string[]; // Emotional narrative signature (edit distance sequence)
+    narrative_signature?: string[]; // Emotional narrative signature
     triples: OKFTriple[];
     quotes?: {
         text: string;
@@ -126,53 +126,14 @@ export async function processAudioSession(audioBlob: Blob, apiKey: string, curre
     const cleanMimeType = (audioBlob.type || 'audio/webm').split(';')[0];
 
     const prompt = `
-  You are an expert personal assistant and psychological profiler.
+  You are an expert personal assistant.
   You are assisting "גיא" (Guy).
   I am providing you with an audio recording of Guy's personal diary entry.
   
-  Please analyze the audio carefully and provide exactly the following in clear, valid JSON format:
+  Please transcribe the audio and provide exactly the following in clear, valid JSON format (do not include markdown code block syntax around the JSON):
   {
-    "transcript": "High-precision full verbatim transcription of the spoken Hebrew audio. Extract every spoken word and sentence accurately. Output 'NO_SPEECH_DETECTED' ONLY if the recording contains complete silence or zero spoken words. Do NOT hallucinate.",
-    "openThreads": ["Array of unresolved thoughts/dilemmas. Phrase as Hebrew questions.", ...],
-    "insights": ["Array of psychological insights. Hebrew.", ...],
-    "topics": ["Array of tags/categories. Hebrew.", ...],
-    "mood": "Short description of mood. Hebrew.",
-    "sentiment": Overall entry sentiment: -1 (negative), 0 (neutral), or 1 (positive),
-    "narrative_signature": ["Sequence of emotional stages representing the narrative arc. Choose ONLY from: 'enthusiasm', 'investment', 'disappointment', 'retreat', 'acceptance', 'joy', 'fear', 'resistance', 'breakthrough', 'exhaustion', 'stagnation', 'clarity'"],
-    "triples": [
-      {
-        "subject": "Entity A",
-        "relation": "Relation A",
-        "object": "Entity B",
-        "domain": "Work/Family/Personal/Health/Finance/General",
-        "temporalContext": "Past/Present/Future",
-        "confidence": "Fact/Inference/Opinion",
-        "sentiment": 1/0/-1,
-        "subjectType": "MVP Entity type",
-        "objectType": "MVP Entity type"
-      }
-    ],
-    "quotes": [
-      {
-        "text": "The exact quote text. Extract this if the user mentions a quote, cites a source/book, uses the word 'ציטוט' (e.g., 'הנה ציטוט...', 'אני רוצה לצטט...'), or mentions a saying/statement in quotation marks or spoken as a direct quote.",
-        "source": "The source/author/origin of the quote if mentioned (e.g., 'אלברט איינשטיין', 'בודהה', 'הספר שקראתי'), or null if not mentioned.",
-        "contexts": ["Array of related themes/topics for the quote in Hebrew."]
-      }
-    ]
+    "transcript": "The full exact transcript. MUST BE IN HEBREW. If the audio is silent, output 'NO_SPEECH_DETECTED'."
   }
-
-  CRITICAL HALUCINATION PREVENTION:
-  If the audio is silent, return empty arrays and set mood to "N/A".
-
-  ${TRIPLES_SCHEMA_INSTRUCTION}
-
-  Current Open Threads:
-  ${currentOpenThreads.length > 0 ? currentOpenThreads.map(t => `- ${t}`).join('\n') : 'None'}
-  
-  CRITICAL: ALL text values MUST be in Hebrew.
-  
-  הקשר קבוע לגבי בני משפחה:
-  ${FIXED_CONTEXT}
   `;
 
     try {
@@ -183,21 +144,40 @@ export async function processAudioSession(audioBlob: Blob, apiKey: string, curre
                     mimeType: cleanMimeType,
                 }
             },
-            {
-                text: prompt
-            }
+            { text: prompt }
         ]);
 
-        const response = await result.response;
-        return parseAIResponse(response.text());
+        const rawResponse = result.response.text();
+        console.log("Raw API Response:", rawResponse);
 
-    } catch (error: any) {
-        console.error("Error processing audio with Gemini:", error);
-        throw error;
+        const parsed = parseAIResponse(rawResponse);
+        
+        return {
+            transcript: parsed.transcript || "NO_SPEECH_DETECTED",
+            openThreads: [],
+            insights: [],
+            topics: [],
+            mood: 'ניטרלי',
+            triples: []
+        };
+    } catch (e) {
+        console.error("AI Error:", e);
+        throw e;
     }
 }
 
-export async function processTextSession(textData: string, apiKey: string, currentOpenThreads: string[] = []): Promise<ProcessedSession> {
+export async function processTextSession(transcript: string, apiKey: string, currentOpenThreads: string[] = []): Promise<ProcessedSession> {
+    if (!apiKey) {
+        return {
+            transcript: transcript,
+            openThreads: [],
+            insights: [],
+            topics: [],
+            mood: 'ניטרלי',
+            triples: []
+        };
+    }
+
     const genAI = getGenAI(apiKey);
     const model = genAI.getGenerativeModel({
         model: activeModelName,
@@ -205,67 +185,92 @@ export async function processTextSession(textData: string, apiKey: string, curre
     }, { apiVersion: activeApiVersion as any });
 
     const prompt = `
-  You are an expert personal assistant and psychological profiler assisting "גיא" (Guy).
-  Analyze the raw text entry from Guy's diary.
-  
-  Raw Text Entry to analyze:
-  """
-  ${textData}
-  """
-  
-  Provide exactly the following in clear, valid JSON format:
-  {
-    "openThreads": ["Array of unresolved thoughts/dilemmas. Phrase as Hebrew questions.", ...],
-    "insights": ["Array of psychological insights. Hebrew.", ...],
-    "topics": ["Array of tags/categories. Hebrew.", ...],
-    "mood": "Short description of mood. Hebrew.",
-    "sentiment": Overall entry sentiment: -1 (negative), 0 (neutral), or 1 (positive),
-    "narrative_signature": ["Sequence of emotional stages representing the narrative arc. Choose ONLY from: 'enthusiasm', 'investment', 'disappointment', 'retreat', 'acceptance', 'joy', 'fear', 'resistance', 'breakthrough', 'exhaustion', 'stagnation', 'clarity'"],
-    "triples": [
-      {
-        "subject": "Entity A",
-        "relation": "Relation A",
-        "object": "Entity B",
-        "domain": "Work/Family/Personal/Health/Finance/General",
-        "temporalContext": "Past/Present/Future",
-        "confidence": "Fact/Inference/Opinion",
-        "sentiment": 1/0/-1,
-        "subjectType": "MVP Entity type",
-        "objectType": "MVP Entity type"
-      }
-    ],
-    "quotes": [
-      {
-        "text": "The exact quote text. Extract this if the text contains a quote (either explicitly using the word 'ציטוט', citing a source/book, containing text in quotation marks, or when direct speech/wise saying is written).",
-        "source": "The source/author/origin of the quote if mentioned (e.g., 'אלברט איינשטיין', 'שייקספיר', 'הספר שקראתי'), or null if not mentioned.",
-        "contexts": ["Array of related themes/topics for the quote in Hebrew."]
-      }
-    ]
-  }
-
-  CRITICAL HALUCINATION PREVENTION:
-  If too short/meaningless, return empty arrays and set mood to "N/A".
-
-  ${TRIPLES_SCHEMA_INSTRUCTION}
-
-  Current Open Threads:
-  ${currentOpenThreads.length > 0 ? currentOpenThreads.map(t => `- ${t}`).join('\n') : 'None'}
-
-  CRITICAL: ALL text values MUST be in Hebrew.
-  
-  הקשר קבוע לגבי בני משפחה:
-  ${FIXED_CONTEXT}
-  `;
+    אתה מערכת הניתוח והתובנות של "ענן המחשבות" עבור גיא (Guy).
+    להלן תמלול של רשומת יומן (או דיאלוג רפלקטיבי עם שאלות חידוד ותשובות):
+    
+    ${FIXED_CONTEXT}
+    
+    """
+    ${transcript}
+    """
+    
+    ${TRIPLES_SCHEMA_INSTRUCTION}
+    
+    עליך לנתח את הטקסט ולהחזיר מבנה JSON תקני לחלוטין (ללא markdown מסביב) לפי הסכמה הבאה:
+    {
+      "mood": "תיאור קצר ומדויק של מצב הרוח והטון הפסיכולוגי של גיא (בעברית, 2-5 מילים, למשל: 'ממוקד, מודע לעצמו ופתוח לביקורת')",
+      "sentiment": מספר שלם: -1 (שלילי/תסכול/עומס), 0 (ניטרלי/שקול), או 1 (חיובי/בהירות/סיפוק),
+      "topics": ["רשימה של 2-5 נושאים/תגיות עיקריים בעברית"],
+      "insights": [
+        "תובנה פסיכולוגית או אסטרטגית עמוקה אחת עד שתיים שמסכמת מה למדנו על גיא, מניעיו, חסמיו או תוכניותיו"
+      ],
+      "narrative_signature": ["2-4 תגיות באנגלית מתוך: enthusiasm, clarity, stagnation, tension, resistance, investment, reflection, vulnerability"],
+      "triples": [
+        // 3-8 קשרים לגרף הידע לפי הסכמה לעיל
+      ]
+    }
+    `;
 
     try {
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const parsed = parseAIResponse(response.text());
-        parsed.transcript = textData;
-        return parsed;
+        const result = await model.generateContent([{ text: prompt }]);
+        const parsed = parseAIResponse(result.response.text());
+        
+        return {
+            transcript: transcript,
+            openThreads: [],
+            insights: Array.isArray(parsed.insights) ? parsed.insights : [],
+            topics: Array.isArray(parsed.topics) ? parsed.topics : [],
+            mood: parsed.mood || 'ניטרלי',
+            sentiment: typeof parsed.sentiment === 'number' ? parsed.sentiment : 0,
+            narrative_signature: Array.isArray(parsed.narrative_signature) ? parsed.narrative_signature : [],
+            triples: normalizeTriples(parsed.triples || [])
+        };
+    } catch (e) {
+        console.error("AI Error in processTextSession:", e);
+        return {
+            transcript: transcript,
+            openThreads: [],
+            insights: [],
+            topics: [],
+            mood: 'ניטרלי',
+            triples: []
+        };
+    }
+}
 
-    } catch (error: any) {
-        console.error("Error processing text with Gemini:", error);
-        throw error;
+export async function generateClarifyingQuestion(sessionTranscript: string, apiKey: string): Promise<string> {
+    const genAI = getGenAI(apiKey);
+    const model = genAI.getGenerativeModel({
+        model: activeModelName,
+        generationConfig: { responseMimeType: "application/json" }
+    }, { apiVersion: activeApiVersion as any });
+
+    const prompt = `
+    אתה "ענן המחשבות", מערכת אפיסטמית ברוח מתודולוגיית RIKMA. מטרתך לחלץ ידע סמוי, רציונל וגבולות גזרה ממחשבותיו של גיא, באפס חיכוך.
+    
+    להלן התמלול המצטבר של הסשן הנוכחי:
+    """
+    \${sessionTranscript}
+    """
+    
+    כללי חקירה סוקרטית (The Single-Question Rule):
+    1. המטרה היא לחשוף את הידע הסמוי: מה ההקשר החסר? למה גיא חושב כך? מתי הכלל הזה תקף (תנאי סף/Boundary Conditions)?
+    2. שאל שאלת חידוד אחת בלבד - קצרה, נוקבת וישירה (עד 15-20 מילים). ללא נימוסים או הקדמות.
+    3. התמקד בלחלץ את ה"למה" או לערער על סתירות (Merge Conflicts של המיינד), ואל תשאל על פרטים טכניים שניתן להסיק לבד.
+    4. אם הטקסט כבר מכיל רציונל עמוק, בהיר ומספק, ואין פער לוגי להשלים - חובה עליך להחזיר בדיוק את המילה "DONE".
+    
+    החזר את התשובה בפורמט JSON בלבד (ללא markdown סביבו):
+    {
+      "question": "השאלה כאן, או המילה DONE"
+    }
+    `;
+
+    try {
+        const result = await model.generateContent([{ text: prompt }]);
+        const parsed = parseAIResponse(result.response.text());
+        return parsed.question || "DONE";
+    } catch (e) {
+        console.error("AI Error in generateClarifyingQuestion:", e);
+        return "DONE"; // Fail safely
     }
 }
