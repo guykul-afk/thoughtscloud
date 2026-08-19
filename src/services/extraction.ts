@@ -250,7 +250,7 @@ export async function generateClarifyingQuestion(sessionTranscript: string, apiK
     
     להלן התמלול המצטבר של הסשן הנוכחי:
     """
-    \${sessionTranscript}
+    ${sessionTranscript}
     """
     
     כללי חקירה סוקרטית (The Single-Question Rule):
