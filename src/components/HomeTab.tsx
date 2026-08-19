@@ -97,8 +97,8 @@ export default function HomeTab({
           // Append current user transcript
           const updatedTranscript = sessionTranscript ? `${sessionTranscript}\nמשתמש: ${result.transcript}` : `משתמש: ${result.transcript}`;
           
-          // If we haven't reached the 2 question limit, ask AI for a question
-          if (questionCount < 2) {
+          // If we haven't reached the 1 question limit, ask AI for a question
+          if (questionCount < 1) {
             const question = await generateClarifyingQuestion(updatedTranscript, apiKey);
             if (question && question !== "DONE") {
               setSessionTranscript(`${updatedTranscript}\nענן המחשבות: ${question}`);
